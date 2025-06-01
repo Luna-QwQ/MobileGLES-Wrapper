@@ -87,6 +87,7 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar *const* string, c
             LOG_D("%s", glsl_src.c_str())
             GLint shaderType;
             GLES.glGetShaderiv(shader, GL_SHADER_TYPE, &shaderType);
+#ifndef __APPLE__
             essl_src = getCachedESSL(glsl_src.c_str(), hardware->es_version);
             if (essl_src.empty())
                 essl_src = GLSLtoGLSLES(glsl_src.c_str(), shaderType, hardware->es_version, glsl_version);
@@ -95,6 +96,9 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar *const* string, c
                 return;
             }
             LOG_D("\n[INFO] [Shader] Converted Shader source: \n%s", essl_src.c_str())
+#else
+            essl_src = glsl_src.c_str();
+#endif
         }
         if (!essl_src.empty()) {
             shaderInfo.id = shader;
