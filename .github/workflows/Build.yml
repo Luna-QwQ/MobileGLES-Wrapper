@@ -16,21 +16,31 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Setup Java
+    # 关键修复：使用Java 11而不是Java 17
+    - name: Setup Java 11 (for Android compatibility)
       uses: actions/setup-java@v3
       with:
-        java-version: '17'
+        java-version: '11'  # Android工具需要Java 8-11
         distribution: 'temurin'
 
-    # 修复：使用正确的Android SDK设置方式
     - name: Setup Android SDK
       uses: android-actions/setup-android@v2
-      # 移除了无效的accept-licenses参数
 
-    # 显式接受Android许可证
+    # 修复许可证接受问题
     - name: Accept Android Licenses
       run: |
-        yes | $ANDROID_HOME/tools/bin/sdkmanager --licenses
+        # 安装兼容性包
+        sudo apt-get update
+        sudo apt-get install -y libxml2-utils
+        
+        # 确保sdkmanager可用
+        mkdir -p $ANDROID_HOME/licenses
+        echo "8933bad161af4178b1185d1a37fbf41ea5269c55" > $ANDROID_HOME/licenses/android-sdk-license
+        echo "d56f5187479451eabf01fb78af6dfcb131a6481e" >> $ANDROID_HOME/licenses/android-sdk-license
+        echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" >> $ANDROID_HOME/licenses/android-sdk-license
+        
+        # 安装基本工具
+        $ANDROID_HOME/tools/bin/sdkmanager "platform-tools"
 
     - name: Install Android NDK
       run: |
@@ -44,7 +54,7 @@ jobs:
         echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
         ls -la $ANDROID_NDK_HOME
 
-    - name: Install CMake
+    - name: Install CMake and Ninja
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build
