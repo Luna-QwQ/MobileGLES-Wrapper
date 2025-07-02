@@ -5,78 +5,83 @@ on:
 
 jobs:
   build-android:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04  # 使用更稳定的基础镜像
     env:
       BUILD_DIR: "android-build"
       ANDROID_ABI: "arm64-v8a"
       ANDROID_PLATFORM: "android-24"
-      NDK_VERSION: "25.2.9519653"  # 使用稳定版本的NDK
+      NDK_VERSION: "25.2.9519653"  # 使用广泛兼容的NDK版本
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 获取完整历史记录
 
-    - name: Set up JDK 17
+    - name: Setup Java
       uses: actions/setup-java@v3
       with:
         java-version: '17'
         distribution: 'temurin'
 
     - name: Setup Android SDK
-      uses: android-actions/setup-android-sdk@v2.0.6
+      uses: android-actions/setup-android@v2
       with:
-        sdkmanager: true  # 确保安装sdkmanager
+        accept-licenses: true
 
     - name: Install Android NDK
       run: |
-        # 接受所有许可
-        yes | $ANDROID_HOME/tools/bin/sdkmanager --licenses
-        # 安装指定版本的NDK
-        $ANDROID_HOME/tools/bin/sdkmanager "ndk;${{ env.NDK_VERSION }}"
-        # 设置环境变量
+        echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;${{ env.NDK_VERSION }}"
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}" >> $GITHUB_ENV
-        echo "NDK_HOME=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}" >> $GITHUB_ENV
+        echo "PATH=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}:$PATH" >> $GITHUB_ENV
 
     - name: Verify NDK installation
       run: |
         echo "ANDROID_HOME: $ANDROID_HOME"
         echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
-        ls -la $ANDROID_NDK_HOME
+        $ANDROID_NDK_HOME/ndk-build --version
+        ls -la $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/
+
+    - name: Install CMake
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake ninja-build
 
     - name: Create build directory
-      run: |
-        mkdir -p ${{ env.BUILD_DIR }}
-        cd ${{ env.BUILD_DIR }}
-        echo "Build directory created"
+      run: mkdir -p ${{ env.BUILD_DIR }}
 
-    - name: Configure CMake
+    - name: Configure with CMake
       working-directory: ${{ env.BUILD_DIR }}
       run: |
         cmake $GITHUB_WORKSPACE \
           -DCMAKE_SYSTEM_NAME=Android \
+          -DCMAKE_SYSTEM_VERSION=${{ env.ANDROID_PLATFORM }} \
           -DCMAKE_ANDROID_ARCH_ABI=${{ env.ANDROID_ABI }} \
           -DCMAKE_ANDROID_NDK=$ANDROID_NDK_HOME \
           -DCMAKE_ANDROID_STL_TYPE=c++_shared \
           -DCMAKE_BUILD_TYPE=Release \
-          -DANDROID_PLATFORM=${{ env.ANDROID_PLATFORM }}
+          -DANDROID_ABI=${{ env.ANDROID_ABI }} \
+          -DANDROID_PLATFORM=${{ env.ANDROID_PLATFORM }} \
+          -G Ninja
 
-    - name: Build project
+    - name: Build the project
       working-directory: ${{ env.BUILD_DIR }}
-      run: cmake --build . --target mobileglues -- -j$(nproc)
+      run: cmake --build . --target mobileglues --parallel $(nproc)
 
     - name: Verify build output
       run: |
-        ls -la ${{ env.BUILD_DIR }}/
+        find ${{ env.BUILD_DIR }} -name "*.so" -exec ls -lh {} \;
         if [ -f "${{ env.BUILD_DIR }}/libmobileglues.so" ]; then
-          echo "Build successful!"
+          echo "✅ Build successful!"
         else
-          echo "Build failed - libmobileglues.so not found!"
+          echo "❌ Build failed - libmobileglues.so not found!"
           exit 1
         fi
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v4  # 使用v4版本解决弃用问题
+      uses: actions/upload-artifact@v4
       with:
-        name: android-libmobileglues
+        name: android-arm64-libmobileglues
         path: ${{ env.BUILD_DIR }}/libmobileglues.so
+        retention-days: 7
         if-no-files-found: error
