@@ -9,10 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
-
-#ifndef __APPLE__
 #include <malloc.h>
-#endif
 
 #ifdef __ANDROID__
 #include <android/log.h>

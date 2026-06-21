@@ -77,15 +77,10 @@ void* open_lib(const char** names, const char* override) {
 }
 
 void load_libs() {
-#ifndef __APPLE__
     const char* gles_override = global_settings.angle == AngleMode::Enabled ? GLES_ANGLE : nullptr;
     const char* egl_override = global_settings.angle == AngleMode::Enabled ? EGL_ANGLE : nullptr;
     gles = open_lib(gles3_lib, gles_override);
     egl = open_lib(egl_lib, egl_override);
-#else
-    gles = (void*)(~(uintptr_t)0);
-    egl = (void*)(~(uintptr_t)0);
-#endif
 }
 
 void* proc_address(void* lib, const char* name) {
@@ -95,10 +90,7 @@ void* proc_address(void* lib, const char* name) {
 void set_hardware() {
     hardware = new hardware_s;
     set_es_version();
-    if (hardware->es_version <= 310)
-        hardware->emulate_texture_buffer = true;
-    else
-        hardware->emulate_texture_buffer = false;
+    hardware->emulate_texture_buffer = false;
 }
 
 void init_gl_state() {
@@ -162,8 +154,6 @@ void InitGLESCapabilities() {
                 g_gles_caps.GL_OES_mapbuffer = 1;
             } else if (strcmp(extension, "GL_EXT_multi_draw_indirect") == 0) {
                 g_gles_caps.GL_EXT_multi_draw_indirect = 1;
-            } else if (strcmp(extension, "GL_OES_draw_elements_base_vertex") == 0) {
-                g_gles_caps.GL_OES_draw_elements_base_vertex = 1;
             } else if (strcmp(extension, "GL_OES_depth_texture") == 0) {
                 g_gles_caps.GL_OES_depth_texture = 1;
             } else if (strcmp(extension, "GL_OES_depth24") == 0) {
@@ -176,8 +166,6 @@ void InitGLESCapabilities() {
                 g_gles_caps.GL_EXT_texture_rg = 1;
             } else if (strcmp(extension, "GL_EXT_texture_query_lod") == 0) {
                 g_gles_caps.GL_EXT_texture_query_lod = 1;
-            } else if (strcmp(extension, "GL_EXT_draw_elements_base_vertex") == 0) {
-                g_gles_caps.GL_EXT_draw_elements_base_vertex = 1;
             }
         } else {
             LOG_D("(nullptr)")
@@ -603,17 +591,4 @@ void init_target_gles() {
 
     InitGLESCapabilities();
     LogOpenGLExtensions();
-
-    bool noCoreBaseVertex = g_gles_caps.major < 3 || (g_gles_caps.major == 3 && g_gles_caps.minor < 2);
-    if (noCoreBaseVertex) {
-        if (g_gles_caps.GL_OES_draw_elements_base_vertex) {
-            g_gles_func.glDrawElementsBaseVertex =
-                (glDrawElementsBaseVertex_PTR)proc_address(gles, "glDrawElementsBaseVertexOES");
-        } else if (g_gles_caps.GL_EXT_draw_elements_base_vertex) {
-            g_gles_func.glDrawElementsBaseVertex =
-                (glDrawElementsBaseVertex_PTR)proc_address(gles, "glDrawElementsBaseVertexEXT");
-        } else {
-            g_gles_func.glDrawElementsBaseVertex = nullptr;
-        }
-    }
 }

@@ -20,9 +20,7 @@
 
 #define DEBUG 0
 
-#ifndef __APPLE__
 __attribute__((used))
-#endif
 const char* license = "GNU LGPL-2.1 License";
 
 void init_config() {
@@ -71,8 +69,6 @@ void proc_init() {
 #endif
 
     // Cleanup
-#ifndef __APPLE__
     destroy_temp_egl_ctx();
-#endif
     g_initialized = 1;
 }

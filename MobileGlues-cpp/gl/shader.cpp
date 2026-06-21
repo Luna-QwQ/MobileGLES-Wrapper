@@ -28,18 +28,16 @@ bool can_run_essl3(unsigned int esversion, const char* glsl) {
     if (strncmp(glsl, "#version 100", 12) == 0) {
         return true;
     }
-
-    unsigned int glsl_version = 0;
     if (strncmp(glsl, "#version 300 es", 15) == 0) {
-        glsl_version = 300;
-    } else if (strncmp(glsl, "#version 310 es", 15) == 0) {
-        glsl_version = 310;
-    } else if (strncmp(glsl, "#version 320 es", 15) == 0) {
-        glsl_version = 320;
-    } else {
-        return false;
+        return true;
     }
-    return esversion >= glsl_version;
+    if (strncmp(glsl, "#version 310 es", 15) == 0) {
+        return true;
+    }
+    if (strncmp(glsl, "#version 320 es", 15) == 0) {
+        return true;
+    }
+    return false;
 }
 
 bool is_direct_shader(const char* glsl) {

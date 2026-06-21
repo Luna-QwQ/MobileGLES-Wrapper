@@ -91,13 +91,9 @@ extern "C"
 
 #define INIT_CHECK_GL_ERROR_FORCE GLenum ERR = GL_NO_ERROR;
 
-#ifndef __APPLE__
 #define NATIVE_FUNCTION_HEAD(type, name, ...)                                                                          \
     extern "C" GLAPI GLAPIENTRY type name##ARB(__VA_ARGS__) __attribute__((alias(#name)));                             \
     extern "C" GLAPI GLAPIENTRY type name(__VA_ARGS__) {
-#else
-#define NATIVE_FUNCTION_HEAD(type, name, ...) extern "C" GLAPI GLAPIENTRY type name(__VA_ARGS__) {
-#endif
 
 #if GLOBAL_DEBUG
 #define NATIVE_FUNCTION_END(type, name, ...)                                                                           \
@@ -153,14 +149,12 @@ extern "C"
         [[maybe_unused]] int GL_EXT_read_format_bgra;
         int GL_OES_mapbuffer;
         int GL_EXT_multi_draw_indirect;
-        int GL_OES_draw_elements_base_vertex;
         int GL_OES_depth_texture;
         int GL_OES_depth24;
         int GL_OES_depth_texture_float;
         int GL_EXT_texture_norm16;
         int GL_EXT_texture_rg;
         int GL_EXT_texture_query_lod;
-        int GL_EXT_draw_elements_base_vertex;
     };
 
     extern struct gles_caps_t g_gles_caps;
