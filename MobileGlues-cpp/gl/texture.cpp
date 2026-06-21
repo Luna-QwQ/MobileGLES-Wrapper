@@ -11,11 +11,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
-
-#ifndef __APPLE__
 #include <android/log.h>
 #include <malloc.h>
-#endif
 
 #include "../gles/gles.h"
 #include "../gles/loader.h"

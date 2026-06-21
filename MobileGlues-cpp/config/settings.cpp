@@ -17,20 +17,6 @@
 global_settings_t global_settings;
 
 void init_settings() {
-#if defined(__APPLE__)
-    global_settings.angle = AngleMode::Disabled;
-    global_settings.ignore_error = IgnoreErrorLevel::Partial;
-    global_settings.ext_compute_shader = false;
-    global_settings.max_glsl_cache_size = 30 * 1024 * 1024;
-    global_settings.multidraw_mode = multidraw_mode_t::DrawElements;
-    global_settings.angle_depth_clear_fix_mode = AngleDepthClearFixMode::Disabled;
-    global_settings.ext_direct_state_access = true;
-    global_settings.custom_gl_version = {0, 0, 0}; // will go default
-    global_settings.fsr1_setting = FSR1_Quality_Preset::Disabled;
-    global_settings.hide_mg_env_level = HideMGEnvLevel::Disabled;
-
-#else
-
     int success = initialized;
     if (!success) {
         success = config_refresh();
@@ -196,7 +182,6 @@ void init_settings() {
     global_settings.custom_gl_version = customGLVersion;
     global_settings.fsr1_setting = fsr1Setting;
     global_settings.hide_mg_env_level = hideMGEnvLevel;
-#endif
 
     LOG_V("[MobileGlues] Setting: enableAngle                 = %s",
           global_settings.angle == AngleMode::Enabled ? "true" : "false")
@@ -266,9 +251,8 @@ void set_multidraw_setting() { // should be called after init_gles_target()
 
 void init_settings_post() {
     bool multidraw = g_gles_caps.GL_EXT_multi_draw_indirect;
-    bool basevertex = g_gles_caps.GL_EXT_draw_elements_base_vertex || g_gles_caps.GL_OES_draw_elements_base_vertex ||
-                      (g_gles_caps.major == 3 && g_gles_caps.minor >= 2) || (g_gles_caps.major > 3);
-    bool indirect = (g_gles_caps.major == 3 && g_gles_caps.minor >= 1) || (g_gles_caps.major > 3);
+    bool basevertex = true;
+    bool indirect = true;
 
     switch (global_settings.multidraw_mode) {
     case multidraw_mode_t::PreferIndirect:

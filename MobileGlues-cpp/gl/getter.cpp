@@ -218,17 +218,8 @@ std::string getGpuName() {
 
 void set_es_version() {
     std::string ESVersionStr = getBeforeThirdSpace(std::string((const char*)GLES.glGetString(GL_VERSION)));
-    int major, minor;
-
-    if (sscanf(ESVersionStr.c_str(), "OpenGL ES %d.%d", &major, &minor) == 2) {
-        hardware->es_version = major * 100 + minor * 10;
-    } else {
-        hardware->es_version = 300;
-    }
+    hardware->es_version = 320;
     LOG_I("OpenGL ES Version: %s (%d)", ESVersionStr.c_str(), hardware->es_version)
-    if (hardware->es_version < 300) {
-        LOG_I("OpenGL ES version is lower than 3.0! This version is not supported!")
-    }
 }
 
 std::string getGLESName() {
@@ -352,12 +343,7 @@ const GLubyte* glGetString(GLenum name) {
         static std::string shadingLangString;
 
         if (shadingLangString.empty()) {
-            std::string baseVer;
-            if (hardware->es_version < 310) {
-                baseVer = "4.00";
-            } else {
-                baseVer = "4.60";
-            }
+            std::string baseVer = "4.60";
 
             if (global_settings.hide_mg_env_level >= HideMGEnvLevel::Level1) {
                 shadingLangString = baseVer;
@@ -381,13 +367,9 @@ const GLubyte* glGetString(GLenum name) {
         return reinterpret_cast<const GLubyte*>(shadingLangString.c_str());
     }
     case GL_EXTENSIONS: {
-#if !defined(__APPLE__)
         static std::string cached;
         cached = GetExtensionsList();
         return (const GLubyte*)cached.c_str();
-#else
-        return (const GLubyte*)GetExtensionsList().c_str();
-#endif
     }
     case GL_SETTINGS_MG: {
         if (global_settings.hide_mg_env_level >= HideMGEnvLevel::Level1) return GLES.glGetString(name);

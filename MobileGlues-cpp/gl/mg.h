@@ -12,10 +12,7 @@ typedef unsigned int uint;
 
 #include <cstring>
 #include <cstdlib>
-
-#ifndef __APPLE__
 #include <malloc.h>
-#endif
 
 #ifdef __ANDROID__
 #include <android/log.h>
