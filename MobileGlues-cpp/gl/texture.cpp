@@ -1485,10 +1485,4 @@ void glPixelStorei(GLenum pname, GLint param) {
     CHECK_GL_ERROR
 }
 
-void glGenerateTextureMipmap(GLuint texture) {
-    LOG()
-    LOG_D("glGenerateTextureMipmap, texture: %d", texture)
-    // ES 3.2 supports glGenerateTextureMipmap via EXT extension; fallback to glGenerateMipmap
-    GLES.glGenerateMipmap(GL_TEXTURE_2D);
-    CHECK_GL_ERROR
-}
+// glGenerateTextureMipmap is handled in ExtWrappers/DSAWrapper.cpp (DSA emulation)
