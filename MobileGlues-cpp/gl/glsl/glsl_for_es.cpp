@@ -948,20 +948,20 @@ int get_or_add_glsl_version(std::string& glsl) {
 // ============================================================================
 
 // Map GLenum shader type to glslang EShLanguage
-static glslang::EShLanguage glenum_to_esh_language(GLenum shader_type) {
+static EShLanguage glenum_to_esh_language(GLenum shader_type) {
     switch (shader_type) {
-    case GL_VERTEX_SHADER:          return glslang::EShLangVertex;
-    case GL_FRAGMENT_SHADER:        return glslang::EShLangFragment;
-    case GL_COMPUTE_SHADER:         return glslang::EShLangCompute;
-    case GL_TESS_CONTROL_SHADER:    return glslang::EShLangTessControl;
-    case GL_TESS_EVALUATION_SHADER: return glslang::EShLangTessEvaluation;
-    case GL_GEOMETRY_SHADER:        return glslang::EShLangGeometry;
-    default:                        return glslang::EShLangCount;
+    case GL_VERTEX_SHADER:          return EShLangVertex;
+    case GL_FRAGMENT_SHADER:        return EShLangFragment;
+    case GL_COMPUTE_SHADER:         return EShLangCompute;
+    case GL_TESS_CONTROL_SHADER:    return EShLangTessControl;
+    case GL_TESS_EVALUATION_SHADER: return EShLangTessEvaluation;
+    case GL_GEOMETRY_SHADER:        return EShLangGeometry;
+    default:                        return EShLangCount;
     }
 }
 
 // Configure glslang TShader for EShClientOpenGL parsing
-static void configure_shader_for_opengl(glslang::TShader& shader, glslang::EShLanguage shader_language,
+static void configure_shader_for_opengl(glslang::TShader& shader, EShLanguage shader_language,
                                         int glsl_version, int target_gl_version) {
     using namespace glslang;
 
@@ -997,8 +997,8 @@ static void configure_shader_for_opengl(glslang::TShader& shader, glslang::EShLa
 // Tries multiple version strategies if the initial attempt fails
 std::vector<unsigned int> glsl_to_spirv(GLenum shader_type, int glsl_version, const char* const* shader_src,
                                         int& errc) {
-    glslang::EShLanguage shader_language = glenum_to_esh_language(shader_type);
-    if (shader_language == glslang::EShLangCount) {
+    EShLanguage shader_language = glenum_to_esh_language(shader_type);
+    if (shader_language == EShLangCount) {
         LOG_D("GLSL type not supported! type=%d", shader_type)
         errc = -1;
         return {};
