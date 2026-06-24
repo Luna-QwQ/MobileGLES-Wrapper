@@ -56,16 +56,6 @@
 // Watermark inserted when atomic counters are converted to SSBOs
 const char* atomicCounterEmulatedWatermark = "// Non-opaque atomic uniform converted to SSBO";
 
-// Supported EShTargetOpenGL versions for fallback
-// glslang currently only supports EShTargetOpenGL_450 for OpenGL client
-static const int k_opengl_version_fallbacks[] = {450, 440, 430, 420, 410, 400, 330};
-
-// Target ESSL version (always ES 3.2)
-static const uint k_target_essl_version = 320;
-
-// Target SPIR-V version
-static const glslang::EShTargetSpv k_target_spv = glslang::EShTargetSpv_1_5;
-
 // ============================================================================
 // Section 2: Version Mapping
 // ============================================================================
@@ -84,19 +74,6 @@ static int map_glsl_to_opengl_version(int glsl_version) {
     if (glsl_version >= 150) return 150;
     if (glsl_version >= 140) return 140;
     return 330; // minimum for core profile
-}
-
-// Map GLSL version to EShTargetOpenGL_* enum
-static EShTargetClientVersion glsl_version_to_target(int glsl_version) {
-    if (glsl_version >= 450) return EShTargetOpenGL_450;
-    if (glsl_version >= 440) return EShTargetOpenGL_440;
-    if (glsl_version >= 430) return EShTargetOpenGL_430;
-    if (glsl_version >= 420) return EShTargetOpenGL_420;
-    if (glsl_version >= 410) return EShTargetOpenGL_410;
-    if (glsl_version >= 400) return EShTargetOpenGL_400;
-    if (glsl_version >= 330) return EShTargetOpenGL_330;
-    if (glsl_version >= 150) return EShTargetOpenGL_150;
-    return EShTargetOpenGL_450; // default: use the highest supported
 }
 
 // ============================================================================
@@ -971,32 +948,31 @@ int get_or_add_glsl_version(std::string& glsl) {
 // ============================================================================
 
 // Map GLenum shader type to glslang EShLanguage
-static EShLanguage glenum_to_esh_language(GLenum shader_type) {
+static glslang::EShLanguage glenum_to_esh_language(GLenum shader_type) {
     switch (shader_type) {
-    case GL_VERTEX_SHADER:          return EShLanguage::EShLangVertex;
-    case GL_FRAGMENT_SHADER:        return EShLanguage::EShLangFragment;
-    case GL_COMPUTE_SHADER:         return EShLanguage::EShLangCompute;
-    case GL_TESS_CONTROL_SHADER:    return EShLanguage::EShLangTessControl;
-    case GL_TESS_EVALUATION_SHADER: return EShLanguage::EShLangTessEvaluation;
-    case GL_GEOMETRY_SHADER:        return EShLanguage::EShLangGeometry;
-    default:                        return EShLanguage::EShLangCount; // invalid
+    case GL_VERTEX_SHADER:          return glslang::EShLangVertex;
+    case GL_FRAGMENT_SHADER:        return glslang::EShLangFragment;
+    case GL_COMPUTE_SHADER:         return glslang::EShLangCompute;
+    case GL_TESS_CONTROL_SHADER:    return glslang::EShLangTessControl;
+    case GL_TESS_EVALUATION_SHADER: return glslang::EShLangTessEvaluation;
+    case GL_GEOMETRY_SHADER:        return glslang::EShLangGeometry;
+    default:                        return glslang::EShLangCount;
     }
 }
 
 // Configure glslang TShader for EShClientOpenGL parsing
-static void configure_shader_for_opengl(glslang::TShader& shader, EShLanguage shader_language,
+static void configure_shader_for_opengl(glslang::TShader& shader, glslang::EShLanguage shader_language,
                                         int glsl_version, int target_gl_version) {
     using namespace glslang;
 
     // KEY: Set input to EShClientOpenGL so glslang parses OpenGL GLSL semantics
     shader.setEnvInput(EShSourceGlsl, shader_language, EShClientOpenGL, target_gl_version);
 
-    // Set client to OpenGL (not Vulkan)
-    EShTargetClientVersion target_gl = glsl_version_to_target(target_gl_version);
-    shader.setEnvClient(EShClientOpenGL, target_gl);
+    // Set client to OpenGL (not Vulkan) — glslang only supports EShTargetOpenGL_450
+    shader.setEnvClient(EShClientOpenGL, EShTargetOpenGL_450);
 
     // Output SPIR-V 1.5
-    shader.setEnvTarget(EShTargetSpv, k_target_spv);
+    shader.setEnvTarget(EShTargetSpv, EShTargetSpv_1_5);
 
     // Auto-map locations and bindings for OpenGL compatibility
     shader.setAutoMapLocations(true);
@@ -1021,8 +997,8 @@ static void configure_shader_for_opengl(glslang::TShader& shader, EShLanguage sh
 // Tries multiple version strategies if the initial attempt fails
 std::vector<unsigned int> glsl_to_spirv(GLenum shader_type, int glsl_version, const char* const* shader_src,
                                         int& errc) {
-    EShLanguage shader_language = glenum_to_esh_language(shader_type);
-    if (shader_language == EShLanguage::EShLangCount) {
+    glslang::EShLanguage shader_language = glenum_to_esh_language(shader_type);
+    if (shader_language == glslang::EShLangCount) {
         LOG_D("GLSL type not supported! type=%d", shader_type)
         errc = -1;
         return {};
