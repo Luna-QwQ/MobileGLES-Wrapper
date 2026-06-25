@@ -170,11 +170,11 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
         return;
     }
 
-    std::string glsl_code = string[0];
+    const char* raw_code = string[0];
 
     // Step 2: If shader type is unknown (e.g. Iris sets it after source), detect from content
     if (shaderType == 0 || shaderType == GL_FRAGMENT_SHADER) {
-        GLenum detected = detect_shader_type_from_source(glsl_code.c_str());
+        GLenum detected = detect_shader_type_from_source(raw_code);
         if (detected != GL_FRAGMENT_SHADER) {
             shaderType = detected;
             LOG_D("Detected shader type from source: %d", shaderType)
@@ -183,14 +183,15 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
 
     LOG_D("glShaderSource: shaderType=%d", shaderType)
 
-    // Step 3: Check if already an ES-compatible shader → native pass-through
-    if (is_direct_shader(glsl_code.c_str())) {
+    // Step 3: Check if already an ES-compatible shader → native pass-through (avoids string copy)
+    if (is_direct_shader(raw_code)) {
         LOG_D("Direct ES shader (ESSL 100/300/310/320), passing through")
         GLES.glShaderSource(shader, count, string, length);
         return;
     }
 
-    // Step 4: Convert desktop GLSL → GLSL ES 3.2 (version 320)
+    // Step 4: Convert desktop GLSL → GLSL ES 3.2 (version 320) — only now we copy the string
+    std::string glsl_code = raw_code;
     uint essl_version = 320; // target ES 3.2
     int return_code = -1;
     std::string converted = GLSLtoGLSLES(glsl_code.c_str(), shaderType, essl_version, 0, return_code);

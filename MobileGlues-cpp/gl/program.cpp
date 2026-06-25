@@ -130,6 +130,7 @@ void glValidateProgram(GLuint program) {
 
 void glUseProgram(GLuint program) {
     LOG()
+    set_gl_state_current_program(program);
     GLES.glUseProgram(program);
 }
 
