@@ -299,18 +299,20 @@ void glDrawBuffer(GLenum buffer) {
         GLint maxAttachments;
         GLES.glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS, &maxAttachments);
 
+        // Pre-sized thread_local buffer to avoid per-frame allocation
+        static thread_local std::vector<GLenum> tls_buffers;
+        if (tls_buffers.size() < (size_t)maxAttachments) [[unlikely]]
+            tls_buffers.resize(maxAttachments, GL_NONE);
+
         if (buffer == GL_NONE) {
             framebuffers[current_draw_fbo].color_attachments_all_none = true;
-            // Use thread_local static buffer to avoid per-frame allocation
-            static thread_local std::vector<GLenum> buffers;
-            buffers.assign(maxAttachments, GL_NONE);
-            glDrawBuffers(maxAttachments, buffers.data());
+            std::fill(tls_buffers.begin(), tls_buffers.begin() + maxAttachments, GL_NONE);
+            glDrawBuffers(maxAttachments, tls_buffers.data());
         } else if (buffer >= GL_COLOR_ATTACHMENT0 && buffer < GL_COLOR_ATTACHMENT0 + maxAttachments) {
             framebuffers[current_draw_fbo].color_attachments_all_none = false;
-            static thread_local std::vector<GLenum> buffers;
-            buffers.assign(maxAttachments, GL_NONE);
-            buffers[buffer - GL_COLOR_ATTACHMENT0] = buffer;
-            glDrawBuffers(maxAttachments, buffers.data());
+            std::fill(tls_buffers.begin(), tls_buffers.begin() + maxAttachments, GL_NONE);
+            tls_buffers[buffer - GL_COLOR_ATTACHMENT0] = buffer;
+            glDrawBuffers(maxAttachments, tls_buffers.data());
         }
     }
     CHECK_GL_ERROR;
@@ -343,9 +345,10 @@ void glDrawBuffers(GLsizei n, const GLenum* bufs) {
         fbo.color_attachments_all_none = false;
     }
 
-    // Use thread_local static buffer to avoid per-frame allocation
+    // Pre-sized thread_local static buffer to avoid per-frame allocation
     static thread_local std::vector<GLenum> new_bufs;
-    new_bufs.resize(n);
+    if (new_bufs.size() < (size_t)n) [[unlikely]]
+        new_bufs.resize(n);
     for (int i = 0; i < n; i++) {
         if (bufs[i] >= GL_COLOR_ATTACHMENT0 && bufs[i] < GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
             GLenum logical_attachment = bufs[i];

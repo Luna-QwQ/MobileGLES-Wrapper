@@ -122,11 +122,11 @@ void setupBufferTextureUniforms(GLuint program) {
 
 void prepareForDraw() {
     // Fast path: if texture buffer emulation is disabled, nothing to do
-    if (!hardware->emulate_texture_buffer) return;
+    if (!hardware->emulate_texture_buffer) [[likely]] return;
 
     // Fast path: skip if same program already prepared
     GLuint prog = gl_state->current_program;
-    if (prog == g_lastPreparedProgram) return;
+    if (prog == g_lastPreparedProgram) [[likely]] return;
     g_lastPreparedProgram = prog;
 
     LOG_D("prepareForDraw...")

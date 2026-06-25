@@ -132,16 +132,37 @@ static const TexTargetEntry kGLEnumToTextureTarget[] = {
 static constexpr size_t kTexTargetEntryCount = sizeof(kGLEnumToTextureTarget) / sizeof(kGLEnumToTextureTarget[0]);
 
 TextureTarget ConvertGLEnumToTextureTarget(GLenum target) {
-    // Binary search on the sorted kGLEnumToTextureTarget array
-    size_t lo = 0, hi = kTexTargetEntryCount;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        if (kGLEnumToTextureTarget[mid].key < target) lo = mid + 1;
-        else hi = mid;
+    // Switch-based direct lookup — faster than binary search for this hot path
+    switch (target) {
+    case GL_TEXTURE_1D:                   return TextureTarget::TEXTURE_1D;
+    case GL_PROXY_TEXTURE_1D:             return TextureTarget::PROXY_TEXTURE_1D;
+    case GL_TEXTURE_2D:                   return TextureTarget::TEXTURE_2D;
+    case GL_PROXY_TEXTURE_2D:             return TextureTarget::PROXY_TEXTURE_2D;
+    case GL_TEXTURE_3D:                   return TextureTarget::TEXTURE_3D;
+    case GL_PROXY_TEXTURE_3D:             return TextureTarget::PROXY_TEXTURE_3D;
+    case GL_TEXTURE_RECTANGLE:            return TextureTarget::TEXTURE_RECTANGLE;
+    case GL_PROXY_TEXTURE_RECTANGLE:      return TextureTarget::PROXY_TEXTURE_RECTANGLE;
+    case GL_TEXTURE_CUBE_MAP:             return TextureTarget::TEXTURE_CUBE_MAP;
+    case GL_TEXTURE_CUBE_MAP_POSITIVE_X:  return TextureTarget::TEXTURE_CUBE_MAP;
+    case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:  return TextureTarget::TEXTURE_CUBE_MAP;
+    case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:  return TextureTarget::TEXTURE_CUBE_MAP;
+    case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:  return TextureTarget::TEXTURE_CUBE_MAP;
+    case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:  return TextureTarget::TEXTURE_CUBE_MAP;
+    case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:  return TextureTarget::TEXTURE_CUBE_MAP;
+    case GL_PROXY_TEXTURE_CUBE_MAP:       return TextureTarget::PROXY_TEXTURE_CUBE_MAP;
+    case GL_TEXTURE_1D_ARRAY:             return TextureTarget::TEXTURE_1D_ARRAY;
+    case GL_PROXY_TEXTURE_1D_ARRAY:       return TextureTarget::PROXY_TEXTURE_1D_ARRAY;
+    case GL_TEXTURE_2D_ARRAY:             return TextureTarget::TEXTURE_2D_ARRAY;
+    case GL_PROXY_TEXTURE_2D_ARRAY:       return TextureTarget::PROXY_TEXTURE_2D_ARRAY;
+    case GL_TEXTURE_BUFFER:               return TextureTarget::TEXTURE_BUFFER;
+    case GL_TEXTURE_CUBE_MAP_ARRAY:       return TextureTarget::TEXTURE_CUBE_MAP_ARRAY;
+    case GL_PROXY_TEXTURE_CUBE_MAP_ARRAY: return TextureTarget::PROXY_TEXTURE_CUBE_MAP_ARRAY;
+    case GL_TEXTURE_2D_MULTISAMPLE:       return TextureTarget::TEXTURE_2D_MULTISAMPLE;
+    case GL_PROXY_TEXTURE_2D_MULTISAMPLE: return TextureTarget::PROXY_TEXTURE_2D_MULTISAMPLE;
+    case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:         return TextureTarget::TEXTURE_2D_MULTISAMPLE_ARRAY;
+    case GL_PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY:   return TextureTarget::PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY;
+    default:                              return TextureTarget::UNKNWON;
     }
-    if (lo < kTexTargetEntryCount && kGLEnumToTextureTarget[lo].key == target) [[likely]]
-        return kGLEnumToTextureTarget[lo].value;
-    return TextureTarget::UNKNWON;
 }
 
 // ============================================================================

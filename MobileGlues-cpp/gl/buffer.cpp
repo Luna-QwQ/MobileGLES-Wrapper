@@ -179,20 +179,22 @@ static const BufTargetEntry kBufTargetToIndex[] = {
 static constexpr size_t kBufTargetEntryCount = sizeof(kBufTargetToIndex) / sizeof(kBufTargetToIndex[0]);
 
 // Binary search helper
-static inline int bsearch_target_index(GLenum key) {
-    size_t lo = 0, hi = kBufTargetEntryCount;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        if (kBufTargetToIndex[mid].key < key) lo = mid + 1;
-        else hi = mid;
-    }
-    if (lo < kBufTargetEntryCount && kBufTargetToIndex[lo].key == key) [[likely]]
-        return kBufTargetToIndex[lo].value;
-    return -1;
-}
-
 static inline int binding_target_to_index(GLenum target) {
-    return bsearch_target_index(target);
+    switch (target) {
+    case GL_ARRAY_BUFFER:             return BI_ARRAY_BUFFER;
+    case GL_ATOMIC_COUNTER_BUFFER:    return BI_ATOMIC_COUNTER;
+    case GL_COPY_READ_BUFFER:         return BI_COPY_READ;
+    case GL_COPY_WRITE_BUFFER:        return BI_COPY_WRITE;
+    case GL_DRAW_INDIRECT_BUFFER:     return BI_DRAW_INDIRECT;
+    case GL_DISPATCH_INDIRECT_BUFFER: return BI_DISPATCH_INDIRECT;
+    case GL_ELEMENT_ARRAY_BUFFER:     return BI_ELEMENT_ARRAY;
+    case GL_PIXEL_PACK_BUFFER:        return BI_PIXEL_PACK;
+    case GL_PIXEL_UNPACK_BUFFER:      return BI_PIXEL_UNPACK;
+    case GL_SHADER_STORAGE_BUFFER:    return BI_SHADER_STORAGE;
+    case GL_TRANSFORM_FEEDBACK_BUFFER:return BI_TRANSFORM_FEEDBACK;
+    case GL_UNIFORM_BUFFER:           return BI_UNIFORM_BUFFER;
+    default:                          return -1;
+    }
 }
 
 void set_bound_buffer_by_target(GLenum target, GLuint buffer) {
@@ -222,16 +224,20 @@ GLuint find_bound_buffer(GLenum key) {
     if (key == GL_ELEMENT_ARRAY_BUFFER_BINDING) {
         return get_ibo_by_vao(find_bound_array());
     }
-    // Binary search for direct query → index mapping
-    size_t lo = 0, hi = kBufBindingQueryCount;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        if (kBufBindingQueryToIndex[mid].key < key) lo = mid + 1;
-        else hi = mid;
+    switch (key) {
+    case GL_ARRAY_BUFFER_BINDING:              return g_bound_buffers_arr[BI_ARRAY_BUFFER];
+    case GL_ATOMIC_COUNTER_BUFFER_BINDING:     return g_bound_buffers_arr[BI_ATOMIC_COUNTER];
+    case GL_COPY_READ_BUFFER_BINDING:          return g_bound_buffers_arr[BI_COPY_READ];
+    case GL_COPY_WRITE_BUFFER_BINDING:         return g_bound_buffers_arr[BI_COPY_WRITE];
+    case GL_DRAW_INDIRECT_BUFFER_BINDING:      return g_bound_buffers_arr[BI_DRAW_INDIRECT];
+    case GL_DISPATCH_INDIRECT_BUFFER_BINDING:  return g_bound_buffers_arr[BI_DISPATCH_INDIRECT];
+    case GL_PIXEL_PACK_BUFFER_BINDING:         return g_bound_buffers_arr[BI_PIXEL_PACK];
+    case GL_PIXEL_UNPACK_BUFFER_BINDING:       return g_bound_buffers_arr[BI_PIXEL_UNPACK];
+    case GL_SHADER_STORAGE_BUFFER_BINDING:     return g_bound_buffers_arr[BI_SHADER_STORAGE];
+    case GL_TRANSFORM_FEEDBACK_BUFFER_BINDING: return g_bound_buffers_arr[BI_TRANSFORM_FEEDBACK];
+    case GL_UNIFORM_BUFFER_BINDING:            return g_bound_buffers_arr[BI_UNIFORM_BUFFER];
+    default:                                   return 0;
     }
-    if (lo < kBufBindingQueryCount && kBufBindingQueryToIndex[lo].key == key) [[likely]]
-        return g_bound_buffers_arr[kBufBindingQueryToIndex[lo].value];
-    return 0;
 }
 
 // Sorted key-value pair for target → binding query
@@ -252,15 +258,21 @@ static const BufTargetEntry kBufTargetToBindingQuery[] = {
 static constexpr size_t kBufTargetQueryCount = sizeof(kBufTargetToBindingQuery) / sizeof(kBufTargetToBindingQuery[0]);
 
 static GLenum get_binding_query(GLenum target) {
-    size_t lo = 0, hi = kBufTargetQueryCount;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        if (kBufTargetToBindingQuery[mid].key < target) lo = mid + 1;
-        else hi = mid;
+    switch (target) {
+    case GL_ARRAY_BUFFER:              return GL_ARRAY_BUFFER_BINDING;
+    case GL_ELEMENT_ARRAY_BUFFER:      return GL_ELEMENT_ARRAY_BUFFER_BINDING;
+    case GL_PIXEL_PACK_BUFFER:         return GL_PIXEL_PACK_BUFFER_BINDING;
+    case GL_PIXEL_UNPACK_BUFFER:       return GL_PIXEL_UNPACK_BUFFER_BINDING;
+    case GL_UNIFORM_BUFFER:            return GL_UNIFORM_BUFFER_BINDING;
+    case GL_TRANSFORM_FEEDBACK_BUFFER: return GL_TRANSFORM_FEEDBACK_BUFFER_BINDING;
+    case GL_COPY_READ_BUFFER:          return GL_COPY_READ_BUFFER_BINDING;
+    case GL_COPY_WRITE_BUFFER:         return GL_COPY_WRITE_BUFFER_BINDING;
+    case GL_DRAW_INDIRECT_BUFFER:      return GL_DRAW_INDIRECT_BUFFER_BINDING;
+    case GL_SHADER_STORAGE_BUFFER:     return GL_SHADER_STORAGE_BUFFER_BINDING;
+    case GL_DISPATCH_INDIRECT_BUFFER:  return GL_DISPATCH_INDIRECT_BUFFER_BINDING;
+    case GL_ATOMIC_COUNTER_BUFFER:     return GL_ATOMIC_COUNTER_BUFFER_BINDING;
+    default:                           return 0;
     }
-    if (lo < kBufTargetQueryCount && kBufTargetToBindingQuery[lo].key == target) [[likely]]
-        return (GLenum)kBufTargetToBindingQuery[lo].value;
-    return 0;
 }
 
 // ============================================================================
@@ -745,7 +757,7 @@ void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer) {
             return;
         }
 
-        // Save and set pixel unpack state in one batch
+        // Save pixel unpack state
         GLint prev_alignment, prev_row_length, prev_skip_pixels, prev_skip_rows;
         GLES.glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &prev_pixel_buffer_binding);
         GLES.glGetIntegerv(GL_UNPACK_ALIGNMENT, &prev_alignment);
@@ -753,7 +765,7 @@ void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer) {
         GLES.glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &prev_skip_pixels);
         GLES.glGetIntegerv(GL_UNPACK_SKIP_ROWS, &prev_skip_rows);
 
-        // Bind PBO once and query buffer size
+        // Bind PBO and query buffer size
         GLES.glBindBuffer(GL_PIXEL_UNPACK_BUFFER, real_buffer);
         GLint bufferSize;
         GLES.glGetBufferParameteriv(GL_PIXEL_UNPACK_BUFFER, GL_BUFFER_SIZE, &bufferSize);
@@ -770,17 +782,16 @@ void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer) {
             height = (numElements + MAX_WIDTH - 1) / MAX_WIDTH;
         }
 
+        // Use GL_UNPACK_ROW_LENGTH to describe PBO layout, enabling single-call upload
+        // without row-by-row glTexSubImage2D loop
+        GLES.glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        GLES.glPixelStorei(GL_UNPACK_ROW_LENGTH, width);
         GLES.glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
         GLES.glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
 
-        // Create 2D texture and upload from PBO
+        // Single upload: allocate and upload in one call via PBO
         GLES.glBindTexture(GL_TEXTURE_2D, boundTexture);
         GLES.glTexImage2D(GL_TEXTURE_2D, 0, internalformat, width, height, 0, GL_RED_INTEGER, GL_BYTE, nullptr);
-
-        for (GLuint row = 0; row < height; ++row) {
-            void* offset = (void*)(row * width * pixelSize);
-            GLES.glTexSubImage2D(GL_TEXTURE_2D, 0, 0, row, width, 1, GL_RED_INTEGER, GL_BYTE, offset);
-        }
 
         // Restore pixel store state
         GLES.glPixelStorei(GL_UNPACK_ALIGNMENT, prev_alignment);

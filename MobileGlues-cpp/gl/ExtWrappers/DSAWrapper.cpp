@@ -1164,13 +1164,14 @@ void glGetTextureParameteriv(GLuint texture, GLenum pname, GLint* params) {
 // vertex array
 static thread_local GLint prevVAO = -1;
 void temporarilyBindVertexArray(GLint vaoID) {
-    if (prevVAO == vaoID) {
+    GLuint current = find_bound_array();  // CPU-side lookup, no GPU stall
+    if (current == (GLuint)vaoID) {
         prevVAO = -1;
         // return;
     }
-    LOG_D("[DSA] [TempBind] VAO: %u -> bind=%u", prevVAO, vaoID);
+    LOG_D("[DSA] [TempBind] VAO: %u -> bind=%u", current, vaoID);
     CHECK_GL_ERROR;
-    prevVAO = find_bound_array();  // CPU-side lookup, no GPU stall
+    prevVAO = (GLint)current;
     glBindVertexArray(vaoID);
     CHECK_GL_ERROR_NO_INIT;
 }
