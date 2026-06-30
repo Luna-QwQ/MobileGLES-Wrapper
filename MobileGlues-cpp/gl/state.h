@@ -556,5 +556,3 @@ private:
             GLState.isDrawCall = false;                                                   \
         }                                                                                 \
     } while (0)
-
-#endif // MOBILEGLUES_STATE_H
