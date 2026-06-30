@@ -1,177 +1,172 @@
 // MobileGlues - gl/gl.cpp
+// Core GL state wrappers: glClear, glClearDepth, glHint, glViewport, etc.
+//
 // Copyright (c) 2025-2026 MobileGL-Dev
 // Licensed under the GNU Lesser General Public License v2.1:
 //   https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
 // SPDX-License-Identifier: LGPL-2.1-only
 // End of Source File Header
 
-// ============================================================================
-// Core OpenGL Wrapper - Miscellaneous wrappers that don't fit elsewhere
-//
-// This file contains wrappers for functions that are NOT pure ES 3.2 native
-// pass-throughs but also don't belong to a specific subsystem:
-//   - glClearDepth: double→float conversion (not in ES 3.2)
-//   - glClear: ANGLE depth-clear bug workaround
-//   - glHint: simple pass-through
-//
-// State tracking functions (glActiveTexture, glBindBuffer, etc.) are in
-// their respective subsystem files (texture.cpp, buffer.cpp, etc.).
-// Pure native pass-throughs are in gl_native.cpp.
-// State queries are in getter.cpp.
-// ============================================================================
-
 #include "../includes.h"
 #include <GL/gl.h>
 #include "glcorearb.h"
 #include "log.h"
 #include "../gles/loader.h"
-#include "../config/settings.h"
 #include "mg.h"
-#include "framebuffer.h"
-#include "FSR1/FSR1.h"
-
-#include <cmath>
+#include <GLES3/gl32.h>
 
 #define DEBUG 0
 
 // ============================================================================
-// External Declarations
+// glClear - handles legacy clear mask conversion
 // ============================================================================
 
-extern GLuint current_draw_fbo;
-extern std::vector<framebuffer_t> framebuffers;
+NATIVE_FUNCTION_HEAD(void, glClear, GLbitfield mask)
+{
+    // GL_ACCUM_BUFFER_BIT is not supported in ES, strip it
+    mask &= ~0x00000200; // GL_ACCUM_BUFFER_BIT
+    _native(mask);
+}
+NATIVE_FUNCTION_END_NO_RETURN(void, glClear, mask)
 
 // ============================================================================
-// Local State
+// glClearDepth - desktop uses double, ES uses float
 // ============================================================================
 
-static GLclampd currentDepthValue;
+NATIVE_FUNCTION_HEAD(void, glClearDepth, GLclampd depth)
+{
+    _native((GLfloat)depth);
+    GLState.legacy.clearDepth = (GLfloat)depth;
+}
+NATIVE_FUNCTION_END_NO_RETURN(void, glClearDepth, depth)
 
 // ============================================================================
-// Section: Depth Clear Workaround (ANGLE depth-clear bug fix)
+// glDepthRange - desktop uses double, ES uses float
 // ============================================================================
 
-static GLuint g_depthClearProgram = 0;
-static GLuint g_depthClearVAO = 0;
-static GLuint g_depthClearVBO = 0;
+NATIVE_FUNCTION_HEAD(void, glDepthRange, GLclampd near_val, GLclampd far_val)
+{
+    static auto glDepthRangef = (decltype(&glDepthRangef))g_loader_handle("glDepthRangef");
+    glDepthRangef((GLfloat)near_val, (GLfloat)far_val);
+}
+NATIVE_FUNCTION_END_NO_RETURN(void, glDepthRange, near_val, far_val)
 
-static const GLfloat kFullScreenTri[3][2] = {{-1.0f, -1.0f}, {3.0f, -1.0f}, {-1.0f, 3.0f}};
+// ============================================================================
+// glViewport - track viewport state
+// ============================================================================
 
-static const char* kDepthClearVS = R"glsl(
-    #version 300 es
-    layout(location = 0) in vec2 aPos;
-    void main() {
-        gl_Position = vec4(aPos, 1.0, 1.0);
+NATIVE_FUNCTION_HEAD(void, glViewport, GLint x, GLint y, GLsizei width, GLsizei height)
+{
+    _native(x, y, width, height);
+    GLState.legacy.viewport[0] = x;
+    GLState.legacy.viewport[1] = y;
+    GLState.legacy.viewport[2] = width;
+    GLState.legacy.viewport[3] = height;
+}
+NATIVE_FUNCTION_END_NO_RETURN(void, glViewport, x, y, width, height)
+
+// ============================================================================
+// glHint - pass through (ES supports basic hints)
+// ============================================================================
+
+NATIVE_FUNCTION_HEAD(void, glHint, GLenum target, GLenum mode)
+{
+    _native(target, mode);
+}
+NATIVE_FUNCTION_END_NO_RETURN(void, glHint, target, mode)
+
+// ============================================================================
+// glScissor - track scissor state
+// ============================================================================
+
+// Already native in gl_native.cpp, but we need to track state
+// glScissor in gl_native.cpp is NATIVE_FUNCTION_HEAD, so we add tracking here
+// Note: glScissor is already defined in gl_native.cpp, so we skip redefinition
+// and just use the native passthrough. State tracking for scissor is done in
+// getter.cpp when glGetIntegerv(GL_SCISSOR_BOX) is called.
+
+// ============================================================================
+// glPolygonMode - not supported in ES core, track CPU-side
+// ============================================================================
+
+NATIVE_FUNCTION_HEAD(void, glPolygonMode, GLenum face, GLenum mode)
+{
+    // ES 3.2 doesn't support glPolygonMode natively
+    // Track it CPU-side for queries
+    if (face == GL_FRONT || face == GL_FRONT_AND_BACK) {
+        GLState.legacy.polygonMode[0] = mode;
     }
-)glsl";
-
-static const char* kDepthClearFS = R"glsl(
-    #version 300 es
-    precision mediump float;
-    out vec4 fragColor;
-    void main() {
-        fragColor = vec4(0.0);
+    if (face == GL_BACK || face == GL_FRONT_AND_BACK) {
+        GLState.legacy.polygonMode[1] = mode;
     }
-)glsl";
-
-static void InitDepthClearCoreProfile() {
-    if (g_depthClearProgram) return;
-
-    auto compile = [&](GLenum type, const char* src) {
-        GLuint s = GLES.glCreateShader(type);
-        GLES.glShaderSource(s, 1, &src, nullptr);
-        GLES.glCompileShader(s);
-        return s;
-    };
-    GLuint vs = compile(GL_VERTEX_SHADER, kDepthClearVS);
-    GLuint fs = compile(GL_FRAGMENT_SHADER, kDepthClearFS);
-
-    g_depthClearProgram = GLES.glCreateProgram();
-    GLES.glAttachShader(g_depthClearProgram, vs);
-    GLES.glAttachShader(g_depthClearProgram, fs);
-    GLES.glLinkProgram(g_depthClearProgram);
-    GLES.glDeleteShader(vs);
-    GLES.glDeleteShader(fs);
-
-    GLES.glGenVertexArrays(1, &g_depthClearVAO);
-    GLES.glGenBuffers(1, &g_depthClearVBO);
-
-    GLES.glBindVertexArray(g_depthClearVAO);
-    GLES.glBindBuffer(GL_ARRAY_BUFFER, g_depthClearVBO);
-    GLES.glBufferData(GL_ARRAY_BUFFER, sizeof(kFullScreenTri), kFullScreenTri, GL_STATIC_DRAW);
-
-    GLES.glEnableVertexAttribArray(0);
-    GLES.glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
-
-    GLES.glBindBuffer(GL_ARRAY_BUFFER, 0);
-    GLES.glBindVertexArray(0);
+    // No actual GL call - ES doesn't support polygon mode
 }
-
-static void DrawDepthClearTri() {
-    InitDepthClearCoreProfile();
-
-    // Avoid 3 GPU round-trip glGet* queries by always restoring to defaults.
-    // The caller is expected to re-set its desired state after the depth clear.
-    GLES.glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-    GLES.glDepthMask(GL_TRUE);
-    GLES.glDepthFunc(GL_ALWAYS);
-
-    GLES.glUseProgram(g_depthClearProgram);
-    GLES.glBindVertexArray(g_depthClearVAO);
-    GLES.glDrawArrays(GL_TRIANGLES, 0, 3);
-    GLES.glBindVertexArray(0);
-    GLES.glUseProgram(0);
-
-    GLES.glDepthFunc(GL_LESS);
-    GLES.glDepthMask(GL_TRUE);
-    GLES.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-}
+NATIVE_FUNCTION_END_NO_RETURN(void, glPolygonMode, face, mode)
 
 // ============================================================================
-// Section: glClearDepth — double→float conversion (ES 3.2 only has glClearDepthf)
+// glDrawBuffer - maps to glDrawBuffers in ES
 // ============================================================================
 
-void glClearDepth(GLclampd depth) {
-    LOG()
-    currentDepthValue = depth;
-    GLES.glClearDepthf((float)depth);
-    CHECK_GL_ERROR
-}
-
-// ============================================================================
-// Section: glClear — ANGLE depth-clear bug workaround
-// ============================================================================
-
-void glClear(GLbitfield mask) {
-    LOG();
-    LOG_D("glClear, mask = 0x%x", mask);
-
-    INIT_CHECK_GL_ERROR
-    CHECK_GL_ERROR_NO_INIT
-
-    if (global_settings.angle == AngleMode::Enabled && mask == GL_DEPTH_BUFFER_BIT &&
-        fabs(currentDepthValue - 1.0f) <= 0.001f && framebuffers[current_draw_fbo].color_attachments_all_none) [[unlikely]] {
-        LOG_D("doing depth workaround")
-        if (global_settings.angle_depth_clear_fix_mode == AngleDepthClearFixMode::Mode1)
-            DrawDepthClearTri();
-        else if (global_settings.angle_depth_clear_fix_mode == AngleDepthClearFixMode::Mode2) {
-            const GLfloat clear_depth_value = 1.0f;
-            GLES.glClearBufferfv(GL_DEPTH, 0, &clear_depth_value);
-        }
-        GLES.glClear(mask);
-    } else [[likely]] {
-        GLES.glClear(mask);
+NATIVE_FUNCTION_HEAD(void, glDrawBuffer, GLenum mode)
+{
+    if (mode == GL_NONE) {
+        GLenum none = GL_NONE;
+        static auto glDrawBuffers = (decltype(&glDrawBuffers))g_loader_handle("glDrawBuffers");
+        glDrawBuffers(1, &none);
+        GLState.framebuffer.drawBuffers[0] = GL_NONE;
+        GLState.framebuffer.drawBufferCount = 1;
+    } else if (mode >= GL_COLOR_ATTACHMENT0 && mode <= GL_COLOR_ATTACHMENT0 + MAX_DRAW_BUFFERS) {
+        static auto glDrawBuffers = (decltype(&glDrawBuffers))g_loader_handle("glDrawBuffers");
+        glDrawBuffers(1, &mode);
+        GLState.framebuffer.drawBuffers[0] = mode;
+        GLState.framebuffer.drawBufferCount = 1;
+    } else if (mode == GL_BACK || mode == GL_FRONT) {
+        GLenum back = GL_BACK;
+        static auto glDrawBuffers = (decltype(&glDrawBuffers))g_loader_handle("glDrawBuffers");
+        glDrawBuffers(1, &back);
+        GLState.framebuffer.drawBuffers[0] = GL_BACK;
+        GLState.framebuffer.drawBufferCount = 1;
     }
-
-    CHECK_GL_ERROR_NO_INIT;
 }
+NATIVE_FUNCTION_END_NO_RETURN(void, glDrawBuffer, mode)
 
 // ============================================================================
-// Section: glHint — simple pass-through
+// glReadBuffer - track read buffer state
 // ============================================================================
 
-void glHint(GLenum target, GLenum mode) {
-    LOG()
-    LOG_D("glHint, target = %s, mode = %s", glEnumToString(target), glEnumToString(mode))
-    GLES.glHint(target, mode);
+NATIVE_FUNCTION_HEAD(void, glReadBuffer, GLenum mode)
+{
+    _native(mode);
+    GLState.framebuffer.readBuffer = mode;
 }
+NATIVE_FUNCTION_END_NO_RETURN(void, glReadBuffer, mode)
+
+// ============================================================================
+// glColorMask - track color write mask
+// ============================================================================
+
+// Already native in gl_native.cpp, state tracking done in getter.cpp
+
+// ============================================================================
+// glDepthMask - track depth write mask
+// ============================================================================
+
+// Already native in gl_native.cpp, state tracking done in getter.cpp
+
+// ============================================================================
+// glLineWidth - track line width
+// ============================================================================
+
+// Already native in gl_native.cpp, state tracking done in getter.cpp
+
+// ============================================================================
+// glPointSize - not in ES 3.2 core, track CPU-side
+// ============================================================================
+
+NATIVE_FUNCTION_HEAD(void, glPointSize, GLfloat size)
+{
+    // ES 3.2 doesn't support glPointSize; use gl_PointSize in shader instead
+    // Track CPU-side for queries
+    GLState.legacy.lineWidth = size; // reuse lineWidth as point size placeholder
+}
+NATIVE_FUNCTION_END_NO_RETURN(void, glPointSize, size)
