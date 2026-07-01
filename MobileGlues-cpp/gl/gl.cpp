@@ -14,6 +14,7 @@
 #include <GL/gl.h>
 #include "glcorearb.h"
 #include "log.h"
+#include "framebuffer.h"
 #include "../gles/loader.h"
 #include "mg.h"
 #include <GLES3/gl32.h>
@@ -57,7 +58,7 @@ void glHint(GLenum target, GLenum mode) {
 // glDrawBuffer - maps to glDrawBuffers in ES
 // ============================================================================
 
-void glDrawBuffer(GLenum mode) {
+extern "C" void glDrawBuffer(GLenum mode) {
     LOG()
     if (mode == GL_NONE) {
         GLenum none = GL_NONE;
@@ -81,7 +82,7 @@ void glDrawBuffer(GLenum mode) {
 // glReadBuffer - track read buffer state
 // ============================================================================
 
-void glReadBuffer(GLenum mode) {
+extern "C" void glReadBuffer(GLenum mode) {
     LOG()
     GLES.glReadBuffer(mode);
     GLState.framebuffer.readBuffer = mode;

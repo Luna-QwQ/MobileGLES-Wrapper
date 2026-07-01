@@ -22,6 +22,14 @@
 
 #define DEBUG 0
 
+// ---------------------------------------------------------------------------
+// Temporary FBO pool for hot-path texture operations
+// (acquireTempFBO / releaseTempFBO — used by texture.cpp)
+// ---------------------------------------------------------------------------
+
+static std::vector<GLuint> g_tempFboPool;
+static size_t g_tempFboPoolIndex = 0;
+
 // ============================================================================
 // FBO ID management
 // ============================================================================
@@ -215,4 +223,36 @@ void InitFramebufferMap(size_t expectedSize) {
     auto &fb = GLState.framebuffer;
     fb.fboMap.reserve(expectedSize);
     fb.fboMapReverse.reserve(expectedSize);
+}
+
+// ============================================================================
+// Temp FBO pool — for hot-path texture operations (glCopyTexImage2D, etc.)
+// ============================================================================
+
+GLuint acquireTempFBO() {
+    if (g_tempFboPoolIndex < g_tempFboPool.size()) {
+        return g_tempFboPool[g_tempFboPoolIndex++];
+    }
+    GLuint fbo;
+    GLES.glGenFramebuffers(1, &fbo);
+    g_tempFboPool.push_back(fbo);
+    g_tempFboPoolIndex++;
+    return fbo;
+}
+
+void releaseTempFBO(GLuint fbo) {
+    // Simple: just decrement index. FBO is not deleted, just returned to pool.
+    if (g_tempFboPoolIndex > 0) g_tempFboPoolIndex--;
+}
+
+void releaseAllTempFBOs() {
+    g_tempFboPoolIndex = 0;
+}
+
+void cleanupTempFBOs() {
+    for (GLuint fbo : g_tempFboPool) {
+        GLES.glDeleteFramebuffers(1, &fbo);
+    }
+    g_tempFboPool.clear();
+    g_tempFboPoolIndex = 0;
 }
