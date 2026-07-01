@@ -365,7 +365,6 @@ GLenum GLStateManager::ConvertType(GLenum type)
         case GL_FLOAT:                      return GL_FLOAT;
         case GL_HALF_FLOAT:                 return GL_HALF_FLOAT;
         case GL_UNSIGNED_INT_24_8:          return GL_UNSIGNED_INT_24_8;
-        case GL_UNSIGNED_SHORT_4_4_4_4_REV: return GL_UNSIGNED_SHORT_4_4_4_4;
         default:                            return type;
     }
 }
