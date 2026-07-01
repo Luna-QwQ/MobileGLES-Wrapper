@@ -32,9 +32,7 @@ void glGenTextures(GLsizei n, GLuint *textures) {
 
     auto &ts = GLState.texture;
     for (GLsizei i = 0; i < n; i++) {
-        TextureObject obj;
-        obj.id = textures[i];
-        ts.textureMap[textures[i]] = obj;
+        ts.textureMap[textures[i]] = textures[i];
         ts.textureMapReverse[textures[i]] = textures[i];
     }
 }
@@ -82,13 +80,6 @@ void glBindTexture(GLenum target, GLuint texture) {
     int unit = GLState.texture.activeUnit;
     GLenum bindingTarget = GLStateManager::TargetToBindingTarget(target);
     GLState.texture.texUnits[unit].binding[bindingTarget] = texture;
-
-    if (texture != 0) {
-        auto *info = GLState.GetTextureInfo(texture);
-        if (info) {
-            info->target = esTarget;
-        }
-    }
 }
 
 // ============================================================================
@@ -109,21 +100,6 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat,
     }
 
     GLES.glTexImage2D(esTarget, level, esInternalFormat, width, height, border, esFormat, esType, pixels);
-
-    int unit = GLState.texture.activeUnit;
-    GLenum bindingTarget = GLStateManager::TargetToBindingTarget(target);
-    GLuint boundTex = GLState.texture.texUnits[unit].binding[bindingTarget];
-    if (boundTex) {
-        auto *info = GLState.GetTextureInfo(boundTex);
-        if (info) {
-            info->target = esTarget;
-            info->internalFormat = esInternalFormat;
-            info->width = width;
-            info->height = (target == GL_TEXTURE_1D) ? 1 : height;
-            info->isDepthStencil = GLStateManager::IsDepthStencilFormat(internalformat);
-            info->isCompressed = false;
-        }
-    }
 }
 
 void glTexImage3D(GLenum target, GLint level, GLint internalformat,
@@ -136,22 +112,6 @@ void glTexImage3D(GLenum target, GLint level, GLint internalformat,
     GLenum esType = GLStateManager::ConvertType(type);
 
     GLES.glTexImage3D(esTarget, level, esInternalFormat, width, height, depth, border, esFormat, esType, pixels);
-
-    int unit = GLState.texture.activeUnit;
-    GLenum bindingTarget = GLStateManager::TargetToBindingTarget(target);
-    GLuint boundTex = GLState.texture.texUnits[unit].binding[bindingTarget];
-    if (boundTex) {
-        auto *info = GLState.GetTextureInfo(boundTex);
-        if (info) {
-            info->target = esTarget;
-            info->internalFormat = esInternalFormat;
-            info->width = width;
-            info->height = height;
-            info->depth = depth;
-            info->isDepthStencil = GLStateManager::IsDepthStencilFormat(internalformat);
-            info->isCompressed = false;
-        }
-    }
 }
 
 // ============================================================================

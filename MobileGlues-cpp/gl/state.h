@@ -70,26 +70,11 @@ constexpr int MAX_TRANSFORM_FEEDBACK_BUFFERS = 4;
 #endif
 
 // ============================================================================
-// TextureObject: per-texture CPU-side metadata
+// BufferObject: per-buffer CPU-side metadata (state.h only)
+// NOTE: TextureObject is defined in texture.h — do not redefine here.
 // ============================================================================
 
-struct TextureObject {
-    GLuint id = 0;           // real GLES texture ID
-    GLenum target = 0;       // GLES target (GL_TEXTURE_2D, etc.)
-    GLenum internalFormat = 0;
-    GLsizei width = 0;
-    GLsizei height = 0;
-    GLsizei depth = 0;
-    bool isProxy = false;
-    bool isCompressed = false;
-    bool isDepthStencil = false;
-};
-
-// ============================================================================
-// BufferObject: per-buffer CPU-side metadata
-// ============================================================================
-
-struct BufferObject {
+struct MGBufferInfo {
     GLuint id = 0;           // real GLES buffer ID
     GLenum target = 0;
     GLsizeiptr size = 0;
@@ -150,7 +135,7 @@ public:
         // ID mapping: virtual (desktop GL) → real (GLES)
         UnorderedMap<GLuint, GLuint> bufferMap;       // virtual → real
         UnorderedMap<GLuint, GLuint> bufferMapReverse; // real → virtual
-        UnorderedMap<GLuint, BufferObject> bufferInfo; // virtual → metadata
+        UnorderedMap<GLuint, MGBufferInfo> bufferInfo; // virtual → metadata
 
         // VAO mapping
         UnorderedMap<GLuint, GLuint> vaoMap;          // virtual → real
@@ -198,8 +183,9 @@ public:
     // ========================================================================
 
     struct TextureState {
-        // ID mapping: virtual → TextureObject
-        UnorderedMap<GLuint, TextureObject> textureMap;       // virtual → metadata
+        // ID mapping: virtual → real GLES texture ID
+        // (Per-texture metadata is managed by texture.h's TextureObject class)
+        UnorderedMap<GLuint, GLuint> textureMap;       // virtual → real
         UnorderedMap<GLuint, GLuint> textureMapReverse;       // real → virtual
 
         // Per-unit binding state: unit → target → virtual texture ID
@@ -445,17 +431,12 @@ public:
 
     GLuint GetRealTexture(GLuint virtualId) {
         auto it = texture.textureMap.find(virtualId);
-        return (it != texture.textureMap.end()) ? it->second.id : 0;
+        return (it != texture.textureMap.end()) ? it->second : 0;
     }
 
     GLuint GetVirtualTexture(GLuint realId) {
         auto it = texture.textureMapReverse.find(realId);
         return (it != texture.textureMapReverse.end()) ? it->second : 0;
-    }
-
-    TextureObject* GetTextureInfo(GLuint virtualId) {
-        auto it = texture.textureMap.find(virtualId);
-        return (it != texture.textureMap.end()) ? &it->second : nullptr;
     }
 
     GLuint GetRealFBO(GLuint virtualId) {

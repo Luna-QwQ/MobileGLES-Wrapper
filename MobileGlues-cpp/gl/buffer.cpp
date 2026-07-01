@@ -35,7 +35,7 @@ void glGenBuffers(GLsizei n, GLuint *buffers) {
     for (GLsizei i = 0; i < n; i++) {
         bs.bufferMap[buffers[i]] = real[i];
         bs.bufferMapReverse[real[i]] = buffers[i];
-        BufferObject info;
+        MGBufferInfo info;
         info.id = real[i];
         bs.bufferInfo[buffers[i]] = info;
     }
