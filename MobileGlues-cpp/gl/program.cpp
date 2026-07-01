@@ -15,215 +15,235 @@
 #include "../gles/loader.h"
 #include "mg.h"
 #include <GLES3/gl32.h>
-#include <string>
-#include <vector>
 #include <cstring>
 
 #define DEBUG 0
 
 // ============================================================================
-// Program ID management
+// Program Object Lifecycle (ES 3.2 native)
 // ============================================================================
 
-NATIVE_FUNCTION_HEAD(GLuint, glCreateProgram)
-{
-    GLuint realId = _native();
-
+GLuint glCreateProgram() {
+    LOG()
+    GLuint program = GLES.glCreateProgram();
+    // Track in state manager (virtual == real for programs)
     auto &ss = GLState.shader;
-    ss.programMap[realId] = realId;
-    ss.programMapReverse[realId] = realId;
-
-    ss.programInfo[realId] = GLStateManager::ShaderState::ProgramInfo{};
-
-    return realId;
+    ss.programMap[program] = program;
+    ss.programMapReverse[program] = program;
+    ss.programInfo[program] = GLStateManager::ShaderState::ProgramInfo{};
+    return program;
 }
-NATIVE_FUNCTION_END(GLuint, glCreateProgram)
 
-NATIVE_FUNCTION_HEAD(void, glDeleteProgram, GLuint program)
-{
-    GLuint realId = GLState.GetRealProgram(program);
-    _native(realId);
-
+void glDeleteProgram(GLuint program) {
+    LOG()
     auto &ss = GLState.shader;
     if (ss.currentProgram == program) {
         ss.currentProgram = 0;
         GLState.currentProgram = 0;
     }
     ss.programMap.erase(program);
-    ss.programMapReverse.erase(realId);
+    ss.programMapReverse.erase(program);
     ss.programInfo.erase(program);
+    GLES.glDeleteProgram(program);
+    CHECK_GL_ERROR
 }
-NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteProgram, program)
 
 // ============================================================================
-// Program linking and usage
+// Shader Object Lifecycle
 // ============================================================================
 
-NATIVE_FUNCTION_HEAD(void, glAttachShader, GLuint program, GLuint shader)
-{
-    GLuint realProg = GLState.GetRealProgram(program);
-    GLuint realShader = GLState.GetRealShader(shader);
-    _native(realProg, realShader);
+// glCreateShader is handled in shader.cpp (GLSL conversion pipeline)
+// glShaderSource is handled in shader.cpp
+// glCompileShader is handled in shader.cpp
 
+void glDeleteShader(GLuint shader) {
+    LOG()
+    auto &ss = GLState.shader;
+    ss.shaderMap.erase(shader);
+    ss.shaderMapReverse.erase(shader);
+    ss.shaderInfo.erase(shader);
+    GLES.glDeleteShader(shader);
+    CHECK_GL_ERROR
+}
+
+// ============================================================================
+// Program Linking & Validation (ES 3.2 native)
+// ============================================================================
+
+void glAttachShader(GLuint program, GLuint shader) {
+    LOG()
+    GLES.glAttachShader(program, shader);
+    // Track in state manager
     auto &ss = GLState.shader;
     auto it = ss.programInfo.find(program);
     if (it != ss.programInfo.end()) {
         it->second.attachedShaders.push_back(shader);
+    } else {
+        ss.programInfo[program] = GLStateManager::ShaderState::ProgramInfo{};
+        ss.programInfo[program].attachedShaders.push_back(shader);
     }
 }
-NATIVE_FUNCTION_END_NO_RETURN(void, glAttachShader, program, shader)
 
-NATIVE_FUNCTION_HEAD(void, glDetachShader, GLuint program, GLuint shader)
-{
-    GLuint realProg = GLState.GetRealProgram(program);
-    GLuint realShader = GLState.GetRealShader(shader);
-    _native(realProg, realShader);
-
+void glDetachShader(GLuint program, GLuint shader) {
+    LOG()
+    GLES.glDetachShader(program, shader);
     auto &ss = GLState.shader;
     auto it = ss.programInfo.find(program);
     if (it != ss.programInfo.end()) {
         auto &vec = it->second.attachedShaders;
         vec.erase(std::remove(vec.begin(), vec.end(), shader), vec.end());
     }
+    CHECK_GL_ERROR
 }
-NATIVE_FUNCTION_END_NO_RETURN(void, glDetachShader, program, shader)
 
-NATIVE_FUNCTION_HEAD(void, glLinkProgram, GLuint program)
-{
-    GLuint realId = GLState.GetRealProgram(program);
-    _native(realId);
+void glLinkProgram(GLuint program) {
+    LOG()
+    GLES.glLinkProgram(program);
 
-    GLint linked = 0;
-    glGetProgramiv(realId, GL_LINK_STATUS, &linked);
+    GLint linkStatus = 0;
+    GLES.glGetProgramiv(program, GL_LINK_STATUS, &linkStatus);
 
     auto &ss = GLState.shader;
     auto it = ss.programInfo.find(program);
     if (it != ss.programInfo.end()) {
-        it->second.linked = (linked == GL_TRUE);
+        it->second.linked = (linkStatus == GL_TRUE);
     }
 
-    if (!linked) {
-        GLint logLen = 0;
-        glGetProgramiv(realId, GL_INFO_LOG_LENGTH, &logLen);
-        if (logLen > 1) {
-            std::vector<char> logBuf(logLen);
-            glGetProgramInfoLog(realId, logLen, nullptr, logBuf.data());
-            MG_LOG_ERROR("Program %u link error: %s", program, logBuf.data());
+    if (linkStatus == GL_FALSE) {
+        GLint infoLogLength = 0;
+        GLES.glGetProgramiv(program, GL_INFO_LOG_LENGTH, &infoLogLength);
+        if (infoLogLength > 1) {
+            char* infoLog = new char[infoLogLength];
+            GLES.glGetProgramInfoLog(program, infoLogLength, nullptr, infoLog);
+            MG_LOG_ERROR("glLinkProgram FAILED: %s", infoLog);
+            delete[] infoLog;
         }
     }
 }
-NATIVE_FUNCTION_END_NO_RETURN(void, glLinkProgram, program)
 
-NATIVE_FUNCTION_HEAD(void, glUseProgram, GLuint program)
-{
-    GLuint realId = GLState.GetRealProgram(program);
-    _native(realId);
+void glValidateProgram(GLuint program) {
+    LOG()
+    GLES.glValidateProgram(program);
 
-    GLState.shader.currentProgram = program;
-    GLState.currentProgram = program;
-}
-NATIVE_FUNCTION_END_NO_RETURN(void, glUseProgram, program)
-
-NATIVE_FUNCTION_HEAD(void, glBindAttribLocation, GLuint program, GLuint index, const GLchar *name)
-{
-    GLuint realId = GLState.GetRealProgram(program);
-    _native(realId, index, name);
-}
-NATIVE_FUNCTION_END_NO_RETURN(void, glBindAttribLocation, program, index, name)
-
-NATIVE_FUNCTION_HEAD(void, glValidateProgram, GLuint program)
-{
-    GLuint realId = GLState.GetRealProgram(program);
-    _native(realId);
-
-    GLint validated = 0;
-    glGetProgramiv(realId, GL_VALIDATE_STATUS, &validated);
+    GLint validateStatus = 0;
+    GLES.glGetProgramiv(program, GL_VALIDATE_STATUS, &validateStatus);
 
     auto &ss = GLState.shader;
     auto it = ss.programInfo.find(program);
     if (it != ss.programInfo.end()) {
-        it->second.validated = (validated == GL_TRUE);
+        it->second.validated = (validateStatus == GL_TRUE);
+    }
+
+    if (validateStatus == GL_FALSE) {
+        GLint infoLogLength = 0;
+        GLES.glGetProgramiv(program, GL_INFO_LOG_LENGTH, &infoLogLength);
+        if (infoLogLength > 1) {
+            char* infoLog = new char[infoLogLength];
+            GLES.glGetProgramInfoLog(program, infoLogLength, nullptr, infoLog);
+            MG_LOG_ERROR("glValidateProgram FAILED: %s", infoLog);
+            delete[] infoLog;
+        }
     }
 }
-NATIVE_FUNCTION_END_NO_RETURN(void, glValidateProgram, program)
 
 // ============================================================================
-// Program queries
+// Program Usage (ES 3.2 native)
 // ============================================================================
 
-NATIVE_FUNCTION_HEAD(void, glGetProgramiv, GLuint program, GLenum pname, GLint *params)
-{
-    GLuint realId = GLState.GetRealProgram(program);
-    _native(realId, pname, params);
+void glUseProgram(GLuint program) {
+    LOG()
+    GLState.shader.currentProgram = program;
+    GLState.currentProgram = program;
+    GLES.glUseProgram(program);
 }
-NATIVE_FUNCTION_END_NO_RETURN(void, glGetProgramiv, program, pname, params)
-
-NATIVE_FUNCTION_HEAD(void, glGetProgramInfoLog, GLuint program, GLsizei bufSize, GLsizei *length, GLchar *infoLog)
-{
-    GLuint realId = GLState.GetRealProgram(program);
-    _native(realId, bufSize, length, infoLog);
-}
-NATIVE_FUNCTION_END_NO_RETURN(void, glGetProgramInfoLog, program, bufSize, length, infoLog)
-
-NATIVE_FUNCTION_HEAD(void, glGetAttachedShaders, GLuint program, GLsizei maxCount, GLsizei *count, GLuint *shaders)
-{
-    GLuint realId = GLState.GetRealProgram(program);
-    _native(realId, maxCount, count, shaders);
-
-    // Convert real shader IDs back to virtual IDs
-    for (GLsizei i = 0; i < (count ? *count : 0); i++) {
-        shaders[i] = GLState.GetVirtualShader(shaders[i]);
-    }
-}
-NATIVE_FUNCTION_END_NO_RETURN(void, glGetAttachedShaders, program, maxCount, count, shaders)
-
-NATIVE_FUNCTION_HEAD(GLint, glGetAttribLocation, GLuint program, const GLchar *name)
-{
-    GLuint realId = GLState.GetRealProgram(program);
-    return _native(realId, name);
-}
-NATIVE_FUNCTION_END(GLint, glGetAttribLocation, program, name)
-
-NATIVE_FUNCTION_HEAD(GLint, glGetUniformLocation, GLuint program, const GLchar *name)
-{
-    GLuint realId = GLState.GetRealProgram(program);
-    return _native(realId, name);
-}
-NATIVE_FUNCTION_END(GLint, glGetUniformLocation, program, name)
-
-NATIVE_FUNCTION_HEAD(void, glGetActiveAttrib, GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLint *size, GLenum *type, GLchar *name)
-{
-    GLuint realId = GLState.GetRealProgram(program);
-    _native(realId, index, bufSize, length, size, type, name);
-}
-NATIVE_FUNCTION_END_NO_RETURN(void, glGetActiveAttrib, program, index, bufSize, length, size, type, name)
-
-NATIVE_FUNCTION_HEAD(void, glGetActiveUniform, GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLint *size, GLenum *type, GLchar *name)
-{
-    GLuint realId = GLState.GetRealProgram(program);
-    _native(realId, index, bufSize, length, size, type, name);
-}
-NATIVE_FUNCTION_END_NO_RETURN(void, glGetActiveUniform, program, index, bufSize, length, size, type, name)
 
 // ============================================================================
-// Helper: translate real shader ID back to virtual
+// Program/Shader Queries (ES 3.2 native)
 // ============================================================================
 
-// Defined in state.h
+void glGetProgramiv(GLuint program, GLenum pname, GLint* params) {
+    GLES.glGetProgramiv(program, pname, params);
+}
+
+void glGetShaderiv(GLuint shader, GLenum pname, GLint* params) {
+    GLES.glGetShaderiv(shader, pname, params);
+}
+
+void glGetProgramInfoLog(GLuint program, GLsizei bufSize, GLsizei* length, GLchar* infoLog) {
+    LOG()
+    GLES.glGetProgramInfoLog(program, bufSize, length, infoLog);
+    CHECK_GL_ERROR
+}
+
+void glGetShaderInfoLog(GLuint shader, GLsizei bufSize, GLsizei* length, GLchar* infoLog) {
+    LOG()
+    GLES.glGetShaderInfoLog(shader, bufSize, length, infoLog);
+    CHECK_GL_ERROR
+}
+
+void glGetAttachedShaders(GLuint program, GLsizei maxCount, GLsizei* count, GLuint* shaders) {
+    LOG()
+    GLES.glGetAttachedShaders(program, maxCount, count, shaders);
+    CHECK_GL_ERROR
+}
+
+// ============================================================================
+// Attribute Location (ES 3.2 native)
+// ============================================================================
+
+void glBindAttribLocation(GLuint program, GLuint index, const GLchar* name) {
+    LOG()
+    GLES.glBindAttribLocation(program, index, name);
+    CHECK_GL_ERROR
+}
+
+GLint glGetAttribLocation(GLuint program, const GLchar* name) {
+    LOG()
+    GLint result = GLES.glGetAttribLocation(program, name);
+    CHECK_GL_ERROR
+    return result;
+}
+
+// ============================================================================
+// Uniform Location (ES 3.2 native)
+// ============================================================================
+
+GLint glGetUniformLocation(GLuint program, const GLchar* name) {
+    LOG()
+    GLint result = GLES.glGetUniformLocation(program, name);
+    CHECK_GL_ERROR
+    return result;
+}
+
+// ============================================================================
+// Active Attribute/Uniform Queries (ES 3.2 native)
+// ============================================================================
+
+void glGetActiveAttrib(GLuint program, GLuint index, GLsizei bufSize, GLsizei* length, GLint* size,
+                       GLenum* type, GLchar* name) {
+    LOG()
+    GLES.glGetActiveAttrib(program, index, bufSize, length, size, type, name);
+    CHECK_GL_ERROR
+}
+
+void glGetActiveUniform(GLuint program, GLuint index, GLsizei bufSize, GLsizei* length, GLint* size,
+                        GLenum* type, GLchar* name) {
+    LOG()
+    GLES.glGetActiveUniform(program, index, bufSize, length, size, type, name);
+    CHECK_GL_ERROR
+}
 
 // ============================================================================
 // glGetString - return custom renderer string
 // ============================================================================
 
-NATIVE_FUNCTION_HEAD(const GLubyte*, glGetString, GLenum name)
-{
-    const GLubyte *result = _native(name);
+const GLubyte* glGetString(GLenum name) {
+    const GLubyte* result = GLES.glGetString(name);
     if (name == GL_RENDERER) {
-        return (const GLubyte *)"MobileGlues";
+        return (const GLubyte*)"MobileGlues";
     }
     if (name == GL_VENDOR) {
-        return (const GLubyte *)"MobileGL-Dev";
+        return (const GLubyte*)"MobileGL-Dev";
     }
     return result;
 }
-NATIVE_FUNCTION_END(const GLubyte*, glGetString, name)
