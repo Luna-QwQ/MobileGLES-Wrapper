@@ -34,7 +34,7 @@ static size_t g_tempFboPoolIndex = 0;
 // FBO ID management
 // ============================================================================
 
-extern "C" void glGenFramebuffers(GLsizei n, GLuint *framebuffers) {
+extern "C" GLAPI GLAPIENTRY void glGenFramebuffers(GLsizei n, GLuint *framebuffers) {
     LOG()
     GLES.glGenFramebuffers(n, framebuffers);
 
@@ -45,7 +45,7 @@ extern "C" void glGenFramebuffers(GLsizei n, GLuint *framebuffers) {
     }
 }
 
-extern "C" void glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers) {
+extern "C" GLAPI GLAPIENTRY void glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers) {
     LOG()
     GLES.glDeleteFramebuffers(n, framebuffers);
 
@@ -67,7 +67,7 @@ extern "C" void glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers) {
 // glBindFramebuffer
 // ============================================================================
 
-extern "C" void glBindFramebuffer(GLenum target, GLuint framebuffer) {
+extern "C" GLAPI GLAPIENTRY void glBindFramebuffer(GLenum target, GLuint framebuffer) {
     LOG()
     GLES.glBindFramebuffer(target, framebuffer);
 
@@ -87,7 +87,7 @@ extern "C" void glBindFramebuffer(GLenum target, GLuint framebuffer) {
 // glFramebufferTexture2D / glFramebufferTexture - attachment tracking
 // ============================================================================
 
-extern "C" void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) {
+extern "C" GLAPI GLAPIENTRY void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) {
     LOG()
     GLenum esTexTarget = GLStateManager::ConvertTextureTarget(textarget);
     GLES.glFramebufferTexture2D(target, attachment, esTexTarget, texture, level);
@@ -104,7 +104,7 @@ extern "C" void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum 
     }
 }
 
-extern "C" void glFramebufferTexture(GLenum target, GLenum attachment, GLuint texture, GLint level) {
+extern "C" GLAPI GLAPIENTRY void glFramebufferTexture(GLenum target, GLenum attachment, GLuint texture, GLint level) {
     LOG()
     GLES.glFramebufferTexture(target, attachment, texture, level);
 
@@ -123,7 +123,7 @@ extern "C" void glFramebufferTexture(GLenum target, GLenum attachment, GLuint te
 // glFramebufferTextureLayer - native passthrough
 // ============================================================================
 
-extern "C" void glFramebufferTextureLayer(GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer) {
+extern "C" GLAPI GLAPIENTRY void glFramebufferTextureLayer(GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer) {
     GLES.glFramebufferTextureLayer(target, attachment, texture, level, layer);
 }
 
@@ -131,7 +131,7 @@ extern "C" void glFramebufferTextureLayer(GLenum target, GLenum attachment, GLui
 // glFramebufferRenderbuffer - native passthrough
 // ============================================================================
 
-extern "C" void glFramebufferRenderbuffer(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer) {
+extern "C" GLAPI GLAPIENTRY void glFramebufferRenderbuffer(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer) {
     GLES.glFramebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer);
 }
 
@@ -139,7 +139,7 @@ extern "C" void glFramebufferRenderbuffer(GLenum target, GLenum attachment, GLen
 // glCheckFramebufferStatus
 // ============================================================================
 
-extern "C" GLenum glCheckFramebufferStatus(GLenum target) {
+extern "C" GLAPI GLAPIENTRY GLenum glCheckFramebufferStatus(GLenum target) {
     LOG()
     GLenum status = GLES.glCheckFramebufferStatus(target);
     // Ignore incomplete errors for applications that don't fully set up FBOs
@@ -162,7 +162,7 @@ extern "C" GLenum glCheckFramebufferStatus(GLenum target) {
 // glFramebufferParameteri - native passthrough
 // ============================================================================
 
-extern "C" void glFramebufferParameteri(GLenum target, GLenum pname, GLint param) {
+extern "C" GLAPI GLAPIENTRY void glFramebufferParameteri(GLenum target, GLenum pname, GLint param) {
     GLES.glFramebufferParameteri(target, pname, param);
 }
 
@@ -170,7 +170,7 @@ extern "C" void glFramebufferParameteri(GLenum target, GLenum pname, GLint param
 // glGetFramebufferAttachmentParameteriv - native passthrough
 // ============================================================================
 
-extern "C" void glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment, GLenum pname, GLint *params) {
+extern "C" GLAPI GLAPIENTRY void glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment, GLenum pname, GLint *params) {
     GLES.glGetFramebufferAttachmentParameteriv(target, attachment, pname, params);
 }
 
@@ -178,7 +178,7 @@ extern "C" void glGetFramebufferAttachmentParameteriv(GLenum target, GLenum atta
 // glGetFramebufferParameteriv - native passthrough
 // ============================================================================
 
-extern "C" void glGetFramebufferParameteriv(GLenum target, GLenum pname, GLint *params) {
+extern "C" GLAPI GLAPIENTRY void glGetFramebufferParameteriv(GLenum target, GLenum pname, GLint *params) {
     GLES.glGetFramebufferParameteriv(target, pname, params);
 }
 
@@ -186,7 +186,7 @@ extern "C" void glGetFramebufferParameteriv(GLenum target, GLenum pname, GLint *
 // glBlitFramebuffer - native passthrough
 // ============================================================================
 
-extern "C" void glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
+extern "C" GLAPI GLAPIENTRY void glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
                        GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1,
                        GLbitfield mask, GLenum filter) {
     // Strip GL_ACCUM_BUFFER_BIT
@@ -198,11 +198,11 @@ extern "C" void glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint s
 // glInvalidateFramebuffer / glInvalidateSubFramebuffer - native passthrough
 // ============================================================================
 
-extern "C" void glInvalidateFramebuffer(GLenum target, GLsizei numAttachments, const GLenum *attachments) {
+extern "C" GLAPI GLAPIENTRY void glInvalidateFramebuffer(GLenum target, GLsizei numAttachments, const GLenum *attachments) {
     GLES.glInvalidateFramebuffer(target, numAttachments, attachments);
 }
 
-extern "C" void glInvalidateSubFramebuffer(GLenum target, GLsizei numAttachments, const GLenum *attachments,
+extern "C" GLAPI GLAPIENTRY void glInvalidateSubFramebuffer(GLenum target, GLsizei numAttachments, const GLenum *attachments,
                                 GLint x, GLint y, GLsizei width, GLsizei height) {
     GLES.glInvalidateSubFramebuffer(target, numAttachments, attachments, x, y, width, height);
 }

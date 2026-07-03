@@ -25,7 +25,7 @@
 // glClearDepth - desktop uses double, ES uses float
 // ============================================================================
 
-extern "C" void glClearDepth(GLclampd depth) {
+extern "C" GLAPI GLAPIENTRY void glClearDepth(GLclampd depth) {
     GLES.glClearDepthf((float)depth);
     GLState.legacy.clearDepth = (GLfloat)depth;
 }
@@ -34,7 +34,7 @@ extern "C" void glClearDepth(GLclampd depth) {
 // glClear - handles legacy clear mask conversion
 // ============================================================================
 
-extern "C" void glClear(GLbitfield mask) {
+extern "C" GLAPI GLAPIENTRY void glClear(GLbitfield mask) {
     // GL_ACCUM_BUFFER_BIT is not supported in ES, strip it
     mask &= ~0x00000200; // GL_ACCUM_BUFFER_BIT
     GLES.glClear(mask);
@@ -44,7 +44,7 @@ extern "C" void glClear(GLbitfield mask) {
 // glHint - pass through (ES supports basic hints)
 // ============================================================================
 
-extern "C" void glHint(GLenum target, GLenum mode) {
+extern "C" GLAPI GLAPIENTRY void glHint(GLenum target, GLenum mode) {
     GLES.glHint(target, mode);
 }
 
@@ -52,7 +52,7 @@ extern "C" void glHint(GLenum target, GLenum mode) {
 // glDrawBuffer - maps to glDrawBuffers in ES
 // ============================================================================
 
-extern "C" void glDrawBuffer(GLenum mode) {
+extern "C" GLAPI GLAPIENTRY void glDrawBuffer(GLenum mode) {
     if (mode == GL_NONE) {
         GLenum none = GL_NONE;
         GLES.glDrawBuffers(1, &none);
@@ -74,7 +74,7 @@ extern "C" void glDrawBuffer(GLenum mode) {
 // glReadBuffer - track read buffer state
 // ============================================================================
 
-extern "C" void glReadBuffer(GLenum mode) {
+extern "C" GLAPI GLAPIENTRY void glReadBuffer(GLenum mode) {
     GLES.glReadBuffer(mode);
     GLState.framebuffer.readBuffer = mode;
 }
