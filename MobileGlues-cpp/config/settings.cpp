@@ -30,7 +30,7 @@ void init_settings() {
     AngleConfig angleConfig = AngleConfig::ForceDisable; // enableANGLE always disabled
     NoErrorConfig noErrorConfig =
         success ? static_cast<NoErrorConfig>(config_get_int("enableNoError")) : NoErrorConfig::Auto;
-    bool enableExtComputeShader = true; // always enabled // success ? (config_get_int("enableExtComputeShader") > 0) : false;
+    bool enableExtComputeShader = true; // always enabled
     bool enableExtTimerQuery = success ? (config_get_int("enableExtTimerQuery") > 0) : false;
     bool enableExtDirectStateAccess = success ? (config_get_int("enableExtDirectStateAccess") > 0) : false;
     AngleDepthClearFixMode angleDepthClearFixMode =
