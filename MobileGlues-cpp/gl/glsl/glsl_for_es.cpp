@@ -912,7 +912,7 @@ std::string preprocess_glsl(const std::string& glsl, GLenum shaderType, bool* at
 
     // Step 6: Feature injections
     inject_temporal_filter(ret);
-    if (!g_gles_caps.GL_EXT_texture_query_lod) inject_textureQueryLod(ret);
+    if (!g_gles_caps.EXT_texture_query_lod) inject_textureQueryLod(ret);
 
     // Step 7: Macros
     inject_mg_macro_definition(ret);
