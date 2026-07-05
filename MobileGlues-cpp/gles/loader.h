@@ -161,7 +161,9 @@ extern "C"
         int GL_OES_depth_texture_float;
         int GL_EXT_texture_norm16;
         int GL_EXT_texture_rg;
-        int GL_EXT_texture_query_lod;
+        int EXT_texture_query_lod;
+        int KHR_texture_compression_astc_ldr;
+        int EXT_texture_filter_anisotropic;
     };
 
     extern struct gles_caps_t g_gles_caps;

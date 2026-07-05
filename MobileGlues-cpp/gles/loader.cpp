@@ -194,6 +194,10 @@ void InitGLESCapabilities() {
                 g_gles_caps.GL_OES_mapbuffer = 1;
             } else if (strcmp(extension, "GL_EXT_multi_draw_indirect") == 0) {
                 g_gles_caps.GL_EXT_multi_draw_indirect = 1;
+            } else if (strcmp(extension, "GL_KHR_texture_compression_astc_ldr") == 0) {
+                g_gles_caps.KHR_texture_compression_astc_ldr = 1;
+            } else if (strcmp(extension, "GL_EXT_texture_filter_anisotropic") == 0) {
+                g_gles_caps.EXT_texture_filter_anisotropic = 1;
             }
         } else {
             LOG_D("(nullptr)")
@@ -211,6 +215,17 @@ void InitGLESCapabilities() {
     if (g_gles_caps.GL_EXT_disjoint_timer_query && global_settings.ext_timer_query) {
         AppendExtension("GL_ARB_timer_query");
         AppendExtension("GL_EXT_timer_query");
+        AppendExtension("GL_EXT_disjoint_timer_query");
+    }
+
+    // ASTC texture compression is core in ES 3.2 — always advertise it
+    if (g_gles_caps.major > 3 || (g_gles_caps.major == 3 && g_gles_caps.minor >= 2)) {
+        AppendExtension("GL_KHR_texture_compression_astc_ldr");
+    }
+
+    // Anisotropic texture filtering — only if detected on the GLES side
+    if (g_gles_caps.EXT_texture_filter_anisotropic) {
+        AppendExtension("GL_EXT_texture_filter_anisotropic");
     }
 
     if (global_settings.ext_compute_shader) {
