@@ -449,6 +449,15 @@ NATIVE_FUNCTION_HEAD(void, glEndQuery, GLenum target) NATIVE_FUNCTION_END_NO_RET
 NATIVE_FUNCTION_HEAD(void, glGetQueryiv, GLenum target, GLenum pname, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetQueryiv, target,pname,params)
 NATIVE_FUNCTION_HEAD(void, glGetQueryObjectuiv, GLuint id, GLenum pname, GLuint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetQueryObjectuiv, id,pname,params)
 
+// EXT aliases for GL_EXT_disjoint_timer_query
+extern "C" GLAPI GLAPIENTRY void glGenQueriesEXT(GLsizei n, GLuint *ids) __attribute__((alias("glGenQueries")));
+extern "C" GLAPI GLAPIENTRY void glDeleteQueriesEXT(GLsizei n, const GLuint *ids) __attribute__((alias("glDeleteQueries")));
+extern "C" GLAPI GLAPIENTRY GLboolean glIsQueryEXT(GLuint id) __attribute__((alias("glIsQuery")));
+extern "C" GLAPI GLAPIENTRY void glBeginQueryEXT(GLenum target, GLuint id) __attribute__((alias("glBeginQuery")));
+extern "C" GLAPI GLAPIENTRY void glEndQueryEXT(GLenum target) __attribute__((alias("glEndQuery")));
+extern "C" GLAPI GLAPIENTRY void glGetQueryivEXT(GLenum target, GLenum pname, GLint *params) __attribute__((alias("glGetQueryiv")));
+extern "C" GLAPI GLAPIENTRY void glGetQueryObjectuivEXT(GLuint id, GLenum pname, GLuint *params) __attribute__((alias("glGetQueryObjectuiv")));
+
 // ============================================================================
 // Transform Feedback
 // ============================================================================

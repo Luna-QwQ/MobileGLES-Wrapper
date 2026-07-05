@@ -1740,8 +1740,23 @@ STUB_FUNCTION_HEAD(GLboolean, glAreTexturesResidentEXT, GLsizei n, const GLuint*
 STUB_FUNCTION_HEAD(void, glPrioritizeTexturesEXT, GLsizei n, const GLuint* textures, const GLclampf* priorities); STUB_FUNCTION_END_NO_RETURN(void, glPrioritizeTexturesEXT,n,textures,priorities)
 STUB_FUNCTION_HEAD(void, glTextureNormalEXT, GLenum mode); STUB_FUNCTION_END_NO_RETURN(void, glTextureNormalEXT,mode)
 STUB_FUNCTION_HEAD(void, glTexStorage1DEXT, GLenum target, GLsizei levels, GLenum internalformat, GLsizei width); STUB_FUNCTION_END_NO_RETURN(void, glTexStorage1DEXT,target,levels,internalformat,width)
-STUB_FUNCTION_HEAD(void, glGetQueryObjecti64vEXT, GLuint id, GLenum pname, GLint64* params); STUB_FUNCTION_END_NO_RETURN(void, glGetQueryObjecti64vEXT,id,pname,params)
-STUB_FUNCTION_HEAD(void, glGetQueryObjectui64vEXT, GLuint id, GLenum pname, GLuint64* params); STUB_FUNCTION_END_NO_RETURN(void, glGetQueryObjectui64vEXT,id,pname,params)
+// GL_EXT_disjoint_timer_query: direct GLES passthrough (no null checks —
+// these are only invoked when the extension is already advertised, so the
+// function pointers are guaranteed to be loaded by InitGLESLoader.)
+extern "C" GLAPI GLAPIENTRY void glQueryCounterEXT(GLuint id, GLenum target) {
+    // No GLES equivalent for glQueryCounter; core GL stub is also a no-op
+}
+extern "C" GLAPI GLAPIENTRY void glGetQueryObjectivEXT(GLuint id, GLenum pname, GLint* params) {
+    GLES.glGetQueryObjectivEXT(id, pname, params);
+}
+extern "C" GLAPI GLAPIENTRY void glGetQueryObjecti64vEXT(GLuint id, GLenum pname, GLint64* params) {
+    GLES.glGetQueryObjecti64vEXT(id, pname, params);
+}
+extern "C" GLAPI GLAPIENTRY void glGetQueryObjectui64vEXT(GLuint id, GLenum pname, GLuint64* params) {
+    GLint64 v;
+    GLES.glGetQueryObjecti64vEXT(id, pname, &v);
+    *params = static_cast<GLuint64>(v);
+}
 STUB_FUNCTION_HEAD(void, glBindBufferOffsetEXT, GLenum target, GLuint index, GLuint buffer, GLintptr offset); STUB_FUNCTION_END_NO_RETURN(void, glBindBufferOffsetEXT,target,index,buffer,offset)
 STUB_FUNCTION_HEAD(void, glArrayElementEXT, GLint i); STUB_FUNCTION_END_NO_RETURN(void, glArrayElementEXT,i)
 STUB_FUNCTION_HEAD(void, glColorPointerEXT, GLint size, GLenum type, GLsizei stride, GLsizei count, const void* pointer); STUB_FUNCTION_END_NO_RETURN(void, glColorPointerEXT,size,type,stride,count,pointer)

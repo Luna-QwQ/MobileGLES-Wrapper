@@ -8680,6 +8680,40 @@ GLAPI void APIENTRY glGetQueryObjectui64vEXT (GLuint id, GLenum pname, GLuint64 
 #endif
 #endif /* GL_EXT_timer_query */
 
+#ifndef GL_EXT_disjoint_timer_query
+#define GL_EXT_disjoint_timer_query 1
+#define GL_QUERY_COUNTER_BITS_EXT          0x8864
+#define GL_CURRENT_QUERY_EXT               0x8865
+#define GL_QUERY_RESULT_EXT                0x8866
+#define GL_QUERY_RESULT_AVAILABLE_EXT      0x8867
+#define GL_TIME_ELAPSED_EXT                0x88BF
+#define GL_TIMESTAMP_EXT                   0x8E28
+typedef void (APIENTRYP PFNGLGENQUERIESEXTPROC) (GLsizei n, GLuint *ids);
+typedef void (APIENTRYP PFNGLDELETEQUERIESEXTPROC) (GLsizei n, const GLuint *ids);
+typedef GLboolean (APIENTRYP PFNGLISQUERYEXTPROC) (GLuint id);
+typedef void (APIENTRYP PFNGLBEGINQUERYEXTPROC) (GLenum target, GLuint id);
+typedef void (APIENTRYP PFNGLENDQUERYEXTPROC) (GLenum target);
+typedef void (APIENTRYP PFNGLQUERYCOUNTEREXTPROC) (GLuint id, GLenum target);
+typedef void (APIENTRYP PFNGLGETQUERYIVEXTPROC) (GLenum target, GLenum pname, GLint *params);
+typedef void (APIENTRYP PFNGLGETQUERYOBJECTIVEXTPROC) (GLuint id, GLenum pname, GLint *params);
+typedef void (APIENTRYP PFNGLGETQUERYOBJECTUIVEXTPROC) (GLuint id, GLenum pname, GLuint *params);
+typedef void (APIENTRYP PFNGLGETQUERYOBJECTI64VEXTPROC) (GLuint id, GLenum pname, GLint64 *params);
+typedef void (APIENTRYP PFNGLGETQUERYOBJECTUI64VEXTPROC) (GLuint id, GLenum pname, GLuint64 *params);
+#ifdef GL_GLEXT_PROTOTYPES
+GLAPI void APIENTRY glGenQueriesEXT (GLsizei n, GLuint *ids);
+GLAPI void APIENTRY glDeleteQueriesEXT (GLsizei n, const GLuint *ids);
+GLAPI GLboolean APIENTRY glIsQueryEXT (GLuint id);
+GLAPI void APIENTRY glBeginQueryEXT (GLenum target, GLuint id);
+GLAPI void APIENTRY glEndQueryEXT (GLenum target);
+GLAPI void APIENTRY glQueryCounterEXT (GLuint id, GLenum target);
+GLAPI void APIENTRY glGetQueryivEXT (GLenum target, GLenum pname, GLint *params);
+GLAPI void APIENTRY glGetQueryObjectivEXT (GLuint id, GLenum pname, GLint *params);
+GLAPI void APIENTRY glGetQueryObjectuivEXT (GLuint id, GLenum pname, GLuint *params);
+GLAPI void APIENTRY glGetQueryObjecti64vEXT (GLuint id, GLenum pname, GLint64 *params);
+GLAPI void APIENTRY glGetQueryObjectui64vEXT (GLuint id, GLenum pname, GLuint64 *params);
+#endif
+#endif /* GL_EXT_disjoint_timer_query */
+
 #ifndef GL_EXT_transform_feedback
 #define GL_EXT_transform_feedback 1
 #define GL_TRANSFORM_FEEDBACK_BUFFER_EXT  0x8C8E
