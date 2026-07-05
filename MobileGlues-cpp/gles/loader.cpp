@@ -189,7 +189,7 @@ void InitGLESCapabilities() {
             if (strcmp(extension, "GL_EXT_buffer_storage") == 0) {
                 g_gles_caps.GL_EXT_buffer_storage = 1;
             } else if (strcmp(extension, "GL_EXT_disjoint_timer_query") == 0) {
-                g_gles_caps.GL_EXT_disjoint_timer_query = 1;
+                g_gles_caps.EXT_disjoint_timer_query = 1;
             } else if (strcmp(extension, "GL_OES_mapbuffer") == 0) {
                 g_gles_caps.GL_OES_mapbuffer = 1;
             } else if (strcmp(extension, "GL_EXT_multi_draw_indirect") == 0) {
@@ -212,7 +212,7 @@ void InitGLESCapabilities() {
         AppendExtension("GL_ARB_buffer_storage");
     }
 
-    if (g_gles_caps.GL_EXT_disjoint_timer_query && global_settings.ext_timer_query) {
+    if (g_gles_caps.EXT_disjoint_timer_query && global_settings.ext_timer_query) {
         AppendExtension("GL_ARB_timer_query");
         AppendExtension("GL_EXT_timer_query");
         AppendExtension("GL_EXT_disjoint_timer_query");

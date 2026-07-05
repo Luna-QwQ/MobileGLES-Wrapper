@@ -149,7 +149,7 @@ extern "C"
         int major;
         int minor;
         int GL_EXT_buffer_storage;
-        int GL_EXT_disjoint_timer_query;
+        int EXT_disjoint_timer_query;
         int GL_QCOM_texture_lod_bias;
         [[maybe_unused]] int GL_EXT_blend_func_extended;
         [[maybe_unused]] int GL_EXT_texture_format_BGRA8888;
