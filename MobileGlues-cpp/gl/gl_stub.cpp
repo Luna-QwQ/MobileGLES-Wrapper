@@ -1740,18 +1740,26 @@ STUB_FUNCTION_HEAD(GLboolean, glAreTexturesResidentEXT, GLsizei n, const GLuint*
 STUB_FUNCTION_HEAD(void, glPrioritizeTexturesEXT, GLsizei n, const GLuint* textures, const GLclampf* priorities); STUB_FUNCTION_END_NO_RETURN(void, glPrioritizeTexturesEXT,n,textures,priorities)
 STUB_FUNCTION_HEAD(void, glTextureNormalEXT, GLenum mode); STUB_FUNCTION_END_NO_RETURN(void, glTextureNormalEXT,mode)
 STUB_FUNCTION_HEAD(void, glTexStorage1DEXT, GLenum target, GLsizei levels, GLenum internalformat, GLsizei width); STUB_FUNCTION_END_NO_RETURN(void, glTexStorage1DEXT,target,levels,internalformat,width)
-// GL_EXT_disjoint_timer_query: forward to core implementations
+// GL_EXT_disjoint_timer_query: forward to GLES function pointers
 extern "C" GLAPI GLAPIENTRY void glQueryCounterEXT(GLuint id, GLenum target) {
-    glQueryCounter(id, target);
+    // No GLES equivalent for glQueryCounter; core GL stub is also a no-op
 }
 extern "C" GLAPI GLAPIENTRY void glGetQueryObjectivEXT(GLuint id, GLenum pname, GLint* params) {
-    glGetQueryObjectiv(id, pname, params);
+    if (GLES.glGetQueryObjectivEXT) {
+        GLES.glGetQueryObjectivEXT(id, pname, params);
+    }
 }
 extern "C" GLAPI GLAPIENTRY void glGetQueryObjecti64vEXT(GLuint id, GLenum pname, GLint64* params) {
-    glGetQueryObjecti64v(id, pname, params);
+    if (GLES.glGetQueryObjecti64vEXT) {
+        GLES.glGetQueryObjecti64vEXT(id, pname, params);
+    }
 }
 extern "C" GLAPI GLAPIENTRY void glGetQueryObjectui64vEXT(GLuint id, GLenum pname, GLuint64* params) {
-    glGetQueryObjectui64v(id, pname, params);
+    if (GLES.glGetQueryObjecti64vEXT) {
+        GLint64 v;
+        GLES.glGetQueryObjecti64vEXT(id, pname, &v);
+        *params = (GLuint64)v;
+    }
 }
 STUB_FUNCTION_HEAD(void, glBindBufferOffsetEXT, GLenum target, GLuint index, GLuint buffer, GLintptr offset); STUB_FUNCTION_END_NO_RETURN(void, glBindBufferOffsetEXT,target,index,buffer,offset)
 STUB_FUNCTION_HEAD(void, glArrayElementEXT, GLint i); STUB_FUNCTION_END_NO_RETURN(void, glArrayElementEXT,i)
