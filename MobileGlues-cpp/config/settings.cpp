@@ -30,7 +30,7 @@ void init_settings() {
     AngleConfig angleConfig = AngleConfig::ForceDisable; // enableANGLE always disabled
     NoErrorConfig noErrorConfig =
         success ? static_cast<NoErrorConfig>(config_get_int("enableNoError")) : NoErrorConfig::Auto;
-    bool enableExtComputeShader = success ? (config_get_int("enableExtComputeShader") > 0) : false;
+    bool enableExtComputeShader = true; // always enabled
     bool enableExtTimerQuery = success ? (config_get_int("enableExtTimerQuery") > 0) : false;
     bool enableExtDirectStateAccess = success ? (config_get_int("enableExtDirectStateAccess") > 0) : false;
     AngleDepthClearFixMode angleDepthClearFixMode =
@@ -96,7 +96,7 @@ void init_settings() {
         LOG_V("Unsupported launcher detected, force using default config.")
         angleConfig = AngleConfig::DisableIfPossible;
         noErrorConfig = NoErrorConfig::Auto;
-        enableExtComputeShader = false;
+        enableExtComputeShader = true; // always enabled
         enableExtTimerQuery = true;
         enableExtDirectStateAccess = true;
         maxGlslCacheSize = 0;
