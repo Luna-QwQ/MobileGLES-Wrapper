@@ -17,6 +17,7 @@
 #include "log.h"
 #include "../gles/loader.h"
 #include "mg.h"
+#include "ComputeShader.h"
 #include <GLES3/gl32.h>
 
 #define DEBUG 0
@@ -350,7 +351,11 @@ NATIVE_FUNCTION_HEAD(void, glDrawElementsInstancedBaseVertex, GLenum mode, GLsiz
 // glDrawArraysIndirect is handled in drawing.cpp (state tracking)
 // glDrawElementsIndirect is handled in drawing.cpp (state tracking)
 // glDispatchCompute is handled in drawing.cpp (atomic counter emulation)
-NATIVE_FUNCTION_HEAD(void, glDispatchComputeIndirect, GLintptr indirect) NATIVE_FUNCTION_END_NO_RETURN(void, glDispatchComputeIndirect, indirect)
+extern "C" GLAPI GLAPIENTRY void glDispatchComputeIndirectARB(GLintptr indirect) __attribute__((alias("glDispatchComputeIndirect")));
+extern "C" GLAPI GLAPIENTRY void glDispatchComputeIndirect(GLintptr indirect) {
+    ComputeShader_FlushPendingDispatch();
+    GLES.glDispatchComputeIndirect(indirect);
+}
 // glDrawBuffers is handled in framebuffer.cpp (attachment remapping)
 
 // ============================================================================
@@ -417,8 +422,19 @@ NATIVE_FUNCTION_HEAD(void, glFrontFace, GLenum mode) NATIVE_FUNCTION_END_NO_RETU
 // Finish and Flush
 // ============================================================================
 
-NATIVE_FUNCTION_HEAD(void, glFinish) NATIVE_FUNCTION_END_NO_RETURN(void, glFinish)
-NATIVE_FUNCTION_HEAD(void, glFlush) NATIVE_FUNCTION_END_NO_RETURN(void, glFlush)
+// glFinish / glFlush: flush pending compute dispatches before
+// the GPU synchronization point to ensure correct ordering.
+extern "C" GLAPI GLAPIENTRY void glFinishARB(void) __attribute__((alias("glFinish")));
+extern "C" GLAPI GLAPIENTRY void glFinish(void) {
+    ComputeShader_FlushPendingDispatch();
+    GLES.glFinish();
+}
+
+extern "C" GLAPI GLAPIENTRY void glFlushARB(void) __attribute__((alias("glFlush")));
+extern "C" GLAPI GLAPIENTRY void glFlush(void) {
+    ComputeShader_FlushPendingDispatch();
+    GLES.glFlush();
+}
 
 // ============================================================================
 // Pixel Storage
