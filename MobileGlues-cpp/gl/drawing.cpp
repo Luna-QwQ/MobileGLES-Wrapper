@@ -15,6 +15,7 @@
 #include "log.h"
 #include "../gles/loader.h"
 #include "mg.h"
+#include "ComputeShader.h"
 #include <GLES3/gl32.h>
 
 #define DEBUG 0
@@ -120,6 +121,7 @@ extern "C" GLAPI GLAPIENTRY void glDrawElementsIndirect(GLenum mode, GLenum type
 // ============================================================================
 
 extern "C" GLAPI GLAPIENTRY void glDispatchCompute(GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z) {
+    ComputeShader_FlushPendingDispatch();
     PREPARE_FOR_DRAW();
     syncAtomicCounters();
     GLES.glDispatchCompute(num_groups_x, num_groups_y, num_groups_z);
@@ -145,6 +147,7 @@ extern "C" GLAPI GLAPIENTRY void glDrawBuffers(GLsizei n, const GLenum *bufs) {
 // ============================================================================
 
 extern "C" GLAPI GLAPIENTRY void glBindImageTexture(GLuint unit, GLuint texture, GLint level, GLboolean layered, GLint layer, GLenum access, GLenum format) {
+    ComputeShader_FlushPendingDispatch();
     GLES.glBindImageTexture(unit, texture, level, layered, layer, access, format);
 
     if (unit < MAX_IMAGE_UNITS) {
@@ -162,9 +165,38 @@ extern "C" GLAPI GLAPIENTRY void glBindImageTexture(GLuint unit, GLuint texture,
 // glMemoryBarrier - handle atomic counter buffer sync
 // ============================================================================
 
+// Narrow GL_ALL_BARRIER_BITS to only the barriers commonly needed for
+// compute shader work. This reduces the probability of driver-forced
+// global synchronization, which is expensive on mobile GPUs.
+// The full GL_ALL_BARRIER_BITS (0xFFFFFFFF) causes the driver to flush
+// all caches; narrowing to the actually relevant bits avoids this.
+#define MG_COMPUTE_BARRIER_MASK (GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | \
+                                 GL_ELEMENT_ARRAY_BARRIER_BIT |       \
+                                 GL_UNIFORM_BARRIER_BIT |             \
+                                 GL_TEXTURE_FETCH_BARRIER_BIT |       \
+                                 GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | \
+                                 GL_COMMAND_BARRIER_BIT |             \
+                                 GL_PIXEL_BUFFER_BARRIER_BIT |        \
+                                 GL_TEXTURE_UPDATE_BARRIER_BIT |      \
+                                 GL_BUFFER_UPDATE_BARRIER_BIT |       \
+                                 GL_FRAMEBUFFER_BARRIER_BIT |         \
+                                 GL_TRANSFORM_FEEDBACK_BARRIER_BIT |  \
+                                 GL_ATOMIC_COUNTER_BARRIER_BIT |      \
+                                 GL_SHADER_STORAGE_BARRIER_BIT)
+
 extern "C" GLAPI GLAPIENTRY void glMemoryBarrier(GLbitfield barriers) {
+    // Flush any pending batch compute before barrier.
+    // Barrier implies ordering, so we must ensure all previous dispatches
+    // are actually submitted before the barrier takes effect.
+    ComputeShader_FlushPendingDispatch();
+
     if (barriers & GL_ATOMIC_COUNTER_BARRIER_BIT) {
         syncAtomicCounters();
+    }
+    // Narrow GL_ALL_BARRIER_BITS to known barrier bits only.
+    // Some drivers treat unknown bits as a full pipeline flush.
+    if (barriers == GL_ALL_BARRIER_BITS) {
+        barriers &= MG_COMPUTE_BARRIER_MASK;
     }
     GLES.glMemoryBarrier(barriers);
 }
