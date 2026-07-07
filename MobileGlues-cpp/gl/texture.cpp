@@ -576,17 +576,6 @@ static GLenum get_binding_for_target(GLenum target) {
     auto& __bindingSlot = __currentUnit.GetBindingSlot(targetR);                                                       \
     auto tex = __bindingSlot.GetBoundObject()
 
-// ============================================================================
-// Track the last texture bound per (unit, target) at the GLES level to avoid
-// redundant glBindTexture calls. Each glBindTexture is a driver call that
-// may trigger internal state validation, so skipping no-op rebinds reduces CPU overhead.
-// ============================================================================
-static std::unordered_map<GLenum, GLuint> g_last_gles_bound_texture[MAX_TEXTURE_IMAGE_UNITS]; // unit -> target -> texture
-
-// ============================================================================
-// glBindTexture (native, with 1D→2D mapping for legacy targets)
-// ============================================================================
-
 void glBindTexture(GLenum target, GLuint texture) {
     LOG()
     LOG_D("glBindTexture(%s, %d)", glEnumToString(target), texture)
@@ -595,30 +584,11 @@ void glBindTexture(GLenum target, GLuint texture) {
     const int currentUnitIndex = GetCurrentTextureUnitIndex();
 
     if (hardware && gl_state && hardware->emulate_texture_buffer && target == GL_TEXTURE_BUFFER) {
-        // Skip GLES call if same texture is already bound to the TBO unit
-        auto it = g_last_gles_bound_texture[15].find(GL_TEXTURE_2D);
-        if (it != g_last_gles_bound_texture[15].end() && it->second == texture) {
-            g_tracked_tex2d_binding[15] = texture;
-            return;
-        }
-        g_last_gles_bound_texture[15][GL_TEXTURE_2D] = texture;
-
         GLES.glActiveTexture(GL_TEXTURE0 + 15);
         GLES.glBindTexture(GL_TEXTURE_2D, texture);
         g_tracked_tex2d_binding[15] = texture;
         GLES.glActiveTexture(GL_TEXTURE0 + gl_state->current_tex_unit);
     } else {
-        // Skip GLES call if same texture is already bound to this (unit, target)
-        auto it = g_last_gles_bound_texture[currentUnitIndex].find(target);
-        if (it != g_last_gles_bound_texture[currentUnitIndex].end() && it->second == texture) {
-            // Still need to update CPU-side tracking
-            if (target == GL_TEXTURE_2D) {
-                g_tracked_tex2d_binding[currentUnitIndex] = texture;
-            }
-            return;
-        }
-        g_last_gles_bound_texture[currentUnitIndex][target] = texture;
-
         GLES.glBindTexture(target, texture);
     }
     CHECK_GL_ERROR_NO_INIT
@@ -659,16 +629,8 @@ void glDeleteTextures(GLsizei n, const GLuint* textures) {
 
     for (GLsizei i = 0; i < n; ++i) {
         MarkTextureObjectForDeletion(textures[i]);
-        // Invalidate texture binding caches: clear any cached state for this texture
+        // Invalidate CPU-side texture binding tracking
         for (int unit = 0; unit < MAX_TEXTURE_IMAGE_UNITS; ++unit) {
-            for (auto it = g_last_gles_bound_texture[unit].begin();
-                 it != g_last_gles_bound_texture[unit].end();) {
-                if (it->second == textures[i]) {
-                    it = g_last_gles_bound_texture[unit].erase(it);
-                } else {
-                    ++it;
-                }
-            }
             if (g_tracked_tex2d_binding[unit] == textures[i]) {
                 g_tracked_tex2d_binding[unit] = 0;
             }

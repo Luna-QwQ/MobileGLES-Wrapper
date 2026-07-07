@@ -929,10 +929,6 @@ void glDeleteVertexArrays(GLsizei n, const GLuint* arrays) {
                 CHECK_GL_ERROR
             }
         }
-        // Invalidate VAO binding cache: if the deleted VAO was bound, reset to 0
-        if (arrays[i] == bound_array) {
-            bound_array = 0;
-        }
         remove_array(arrays[i]);
     }
 }
@@ -946,9 +942,6 @@ GLboolean glIsVertexArray(GLuint array) {
 void glBindVertexArray(GLuint array) {
     LOG()
     LOG_D("glBindVertexArray(%d)", array)
-
-    // Skip if already bound (avoids driver overhead)
-    if (bound_array == array) return;
 
     bound_array = array;
 
