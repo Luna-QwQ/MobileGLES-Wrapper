@@ -333,18 +333,6 @@ GLboolean glIsBuffer(GLuint buffer) {
 void glBindBuffer(GLenum target, GLuint buffer) {
     LOG()
     LOG_D("glBindBuffer, target = %s, buffer = %d", glEnumToString(target), buffer)
-
-    // State dedup: skip if the same buffer is already bound on this target.
-    // Minecraft Java rebinds the same VBOs thousands of times per frame —
-    // avoiding the GPU driver call here is a significant CPU saving.
-    int idx = binding_target_to_index(target);
-    if (idx >= 0 && g_bound_buffers_arr[idx] == buffer) {
-        // Still need to update IBO tracking for ELEMENT_ARRAY_BUFFER
-        if (target == GL_ELEMENT_ARRAY_BUFFER) {
-            update_vao_ibo_binding(find_bound_array(), buffer);
-        }
-        return;
-    }
     set_bound_buffer_by_target(target, buffer);
     // save ibo binding to vao
     if (target == GL_ELEMENT_ARRAY_BUFFER) {
