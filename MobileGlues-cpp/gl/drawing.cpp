@@ -15,7 +15,6 @@
 #include "log.h"
 #include "../gles/loader.h"
 #include "mg.h"
-#include "ComputeShader.h"
 #include <GLES3/gl32.h>
 
 #define DEBUG 0
@@ -121,7 +120,6 @@ extern "C" GLAPI GLAPIENTRY void glDrawElementsIndirect(GLenum mode, GLenum type
 // ============================================================================
 
 extern "C" GLAPI GLAPIENTRY void glDispatchCompute(GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z) {
-    ComputeShader_FlushPendingDispatch();
     PREPARE_FOR_DRAW();
     syncAtomicCounters();
     GLES.glDispatchCompute(num_groups_x, num_groups_y, num_groups_z);
@@ -147,7 +145,6 @@ extern "C" GLAPI GLAPIENTRY void glDrawBuffers(GLsizei n, const GLenum *bufs) {
 // ============================================================================
 
 extern "C" GLAPI GLAPIENTRY void glBindImageTexture(GLuint unit, GLuint texture, GLint level, GLboolean layered, GLint layer, GLenum access, GLenum format) {
-    ComputeShader_FlushPendingDispatch();
     GLES.glBindImageTexture(unit, texture, level, layered, layer, access, format);
 
     if (unit < MAX_IMAGE_UNITS) {
@@ -185,11 +182,6 @@ extern "C" GLAPI GLAPIENTRY void glBindImageTexture(GLuint unit, GLuint texture,
                                  GL_SHADER_STORAGE_BARRIER_BIT)
 
 extern "C" GLAPI GLAPIENTRY void glMemoryBarrier(GLbitfield barriers) {
-    // Flush any pending batch compute before barrier.
-    // Barrier implies ordering, so we must ensure all previous dispatches
-    // are actually submitted before the barrier takes effect.
-    ComputeShader_FlushPendingDispatch();
-
     if (barriers & GL_ATOMIC_COUNTER_BARRIER_BIT) {
         syncAtomicCounters();
     }
