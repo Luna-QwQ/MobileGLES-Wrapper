@@ -607,18 +607,31 @@ void glBufferStorage(GLenum target, GLsizeiptr size, const void* data, GLbitfiel
 // and return gracefully rather than crashing.
 // ============================================================================
 
+// Checked once at first call; static const avoids per-call branch overhead.
 static bool tbo_available() {
-    static bool checked = false;
-    static bool avail = false;
-    if (!checked) {
-        checked = true;
+    static const bool avail = [] {
         if (GLES.glTexBuffer == nullptr) {
             LOG_E("glTexBuffer is not available on this driver — TBO unsupported");
-        } else {
-            avail = true;
+            return false;
         }
-    }
+        return true;
+    }();
     return avail;
+}
+
+// Resolve virtual buffer → real GPU buffer in a single lookup (avoids separate
+// has_buffer + find_real_buffer calls). Returns the real buffer, allocating one
+// on-demand if the virtual buffer is tracked but not yet backed by a GPU object.
+static inline GLuint resolve_tbo_buffer(GLuint buffer) {
+    if (buffer == 0) return 0;
+    auto [rb, exists] = find_real_buffer_with_exists(buffer);
+    if (!exists) return buffer; // not tracked, pass through
+    if (rb != 0) return rb;     // already resolved
+    // Tracked but not yet allocated → create GPU backing
+    GLuint new_rb = 0;
+    GLES.glGenBuffers(1, &new_rb);
+    modify_buffer_direct(buffer, new_rb);
+    return new_rb;
 }
 
 void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer) {
@@ -626,17 +639,9 @@ void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer) {
     LOG_D("glTexBuffer, target = %s, internalformat = %s, buffer = %d", glEnumToString(target),
           glEnumToString(internalformat), buffer)
     if (target != GL_TEXTURE_BUFFER) return;
-    if (!tbo_available()) return;
+    if (!tbo_available()) [[unlikely]] return;
 
-    GLuint real_buffer = buffer;
-    if (has_buffer(buffer) && buffer != 0) {
-        real_buffer = find_real_buffer(buffer);
-        if (!real_buffer) {
-            GLES.glGenBuffers(1, &real_buffer);
-            modify_buffer_direct(buffer, real_buffer);
-            CHECK_GL_ERROR
-        }
-    }
+    GLuint real_buffer = resolve_tbo_buffer(buffer);
     GLES.glTexBuffer(target, internalformat, real_buffer);
     CHECK_GL_ERROR
 }
@@ -645,17 +650,10 @@ void glTexBufferRange(GLenum target, GLenum internalformat, GLuint buffer, GLint
     LOG()
     LOG_D("glTexBufferRange, target = %s, internalformat = %s, buffer = %d, offset = %p, size = %zi",
           glEnumToString(target), glEnumToString(internalformat), buffer, (void*)offset, size)
-    if (!tbo_available()) return;
+    if (target != GL_TEXTURE_BUFFER) return;
+    if (!tbo_available()) [[unlikely]] return;
 
-    GLuint real_buffer = buffer;
-    if (has_buffer(buffer) && buffer != 0) {
-        real_buffer = find_real_buffer(buffer);
-        if (!real_buffer) {
-            GLES.glGenBuffers(1, &real_buffer);
-            modify_buffer_direct(buffer, real_buffer);
-            CHECK_GL_ERROR
-        }
-    }
+    GLuint real_buffer = resolve_tbo_buffer(buffer);
     GLES.glTexBufferRange(target, internalformat, real_buffer, offset, size);
     CHECK_GL_ERROR
 }
