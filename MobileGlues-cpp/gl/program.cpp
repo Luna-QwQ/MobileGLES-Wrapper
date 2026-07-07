@@ -152,6 +152,9 @@ void glValidateProgram(GLuint program) {
 
 void glUseProgram(GLuint program) {
     LOG()
+    // State dedup: skip if the same program is already current.
+    // Minecraft Java frequently rebinds the same shader between draw calls.
+    if (GLState.currentProgram == program) [[likely]] return;
     GLState.shader.currentProgram = program;
     GLState.currentProgram = program;
     GLES.glUseProgram(program);

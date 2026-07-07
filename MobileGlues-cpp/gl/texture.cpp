@@ -576,10 +576,28 @@ static GLenum get_binding_for_target(GLenum target) {
 void glBindTexture(GLenum target, GLuint texture) {
     LOG()
     LOG_D("glBindTexture(%s, %d)", glEnumToString(target), texture)
-    INIT_CHECK_GL_ERROR
 
     const int currentUnitIndex = GetCurrentTextureUnitIndex();
 
+    // State dedup: skip the GPU driver call if this texture is already bound
+    // on this unit+target. Minecraft Java rebinds the same texture atlas
+    // thousands of times per frame — this avoids the driver overhead entirely.
+    {
+        auto targetR = ConvertGLEnumToTextureTarget(target);
+        if (targetR != TextureTarget::UNKNWON) {
+            auto& bindingSlot = GetTextureUnit(currentUnitIndex).GetBindingSlot(targetR);
+            auto* boundObj = bindingSlot.GetBoundObject();
+            if (boundObj && boundObj->texture == texture) [[likely]] {
+                // Already bound — still need to update GL_TEXTURE_2D tracking
+                if (target == GL_TEXTURE_2D) {
+                    g_tracked_tex2d_binding[currentUnitIndex] = texture;
+                }
+                return;
+            }
+        }
+    }
+
+    INIT_CHECK_GL_ERROR
     GLES.glBindTexture(target, texture);
     CHECK_GL_ERROR_NO_INIT
 
