@@ -12,6 +12,7 @@
 #include "buffer.h"
 #include "ankerl/unordered_dense.h"
 #include "texture.h"
+#include <unordered_map>
 #include <utility>
 
 // Extern from drawing.cpp: CPU-side tracked GL_TEXTURE_2D binding per unit
@@ -678,6 +679,15 @@ size_t get_internal_format_size(GLenum internalformat) {
 
 extern std::string bufSampelerName;
 
+// ============================================================================
+// TBO emulation state cache — avoids redundant GL calls in glTexBuffer
+// ============================================================================
+
+// Track which TBO textures have already been initialized with default params
+std::unordered_map<GLuint, bool> g_tbo_texture_params_set; // texture -> params initialized
+// Track last allocated dimensions for TBO textures to allow glTexSubImage2D reuse
+std::unordered_map<GLuint, std::pair<GLuint, GLuint>> g_tbo_texture_dims; // texture -> {width, height}
+
 void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer) {
     LOG()
     LOG_D("glTexBuffer, target = %s, internalformat = %s, buffer = %d", glEnumToString(target),
@@ -736,22 +746,34 @@ void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer) {
             height = (numElements + MAX_WIDTH - 1) / MAX_WIDTH;
         }
 
-        // Use GL_UNPACK_ROW_LENGTH to describe PBO layout, enabling single-call upload
-        // without row-by-row glTexSubImage2D loop
-        GLES.glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        GLES.glPixelStorei(GL_UNPACK_ROW_LENGTH, width);
-        GLES.glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
-        GLES.glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+        // Only set pixel store state when different from current (uses CPU-side cache)
+        // This avoids up to 4 redundant glPixelStorei calls per glTexBuffer
+        if (prev_alignment != 1) GLES.glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        if (prev_row_length != (GLint)width) GLES.glPixelStorei(GL_UNPACK_ROW_LENGTH, width);
+        if (prev_skip_pixels != 0) GLES.glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+        if (prev_skip_rows != 0) GLES.glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
 
-        // Single upload: allocate and upload in one call via PBO
+        // Check if texture dimensions changed — use glTexSubImage2D when dimensions
+        // are the same or smaller (avoids driver-side texture reallocation)
+        auto dims_it = g_tbo_texture_dims.find(boundTexture);
+        bool dims_unchanged = (dims_it != g_tbo_texture_dims.end() &&
+                               dims_it->second.first >= width &&
+                               dims_it->second.second >= height);
+
         GLES.glBindTexture(GL_TEXTURE_2D, boundTexture);
-        GLES.glTexImage2D(GL_TEXTURE_2D, 0, internalformat, width, height, 0, GL_RED_INTEGER, GL_BYTE, nullptr);
+        if (dims_unchanged) {
+            // Reuse existing allocation with glTexSubImage2D (cheaper than reallocation)
+            GLES.glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RED_INTEGER, GL_BYTE, nullptr);
+        } else {
+            GLES.glTexImage2D(GL_TEXTURE_2D, 0, internalformat, width, height, 0, GL_RED_INTEGER, GL_BYTE, nullptr);
+            g_tbo_texture_dims[boundTexture] = {width, height};
+        }
 
-        // Restore pixel store state
-        GLES.glPixelStorei(GL_UNPACK_ALIGNMENT, prev_alignment);
-        GLES.glPixelStorei(GL_UNPACK_ROW_LENGTH, prev_row_length);
-        GLES.glPixelStorei(GL_UNPACK_SKIP_PIXELS, prev_skip_pixels);
-        GLES.glPixelStorei(GL_UNPACK_SKIP_ROWS, prev_skip_rows);
+        // Restore pixel store state (only when changed, using CPU-side cache)
+        if (prev_alignment != 1) GLES.glPixelStorei(GL_UNPACK_ALIGNMENT, prev_alignment);
+        if (prev_row_length != (GLint)width) GLES.glPixelStorei(GL_UNPACK_ROW_LENGTH, prev_row_length);
+        if (prev_skip_pixels != 0) GLES.glPixelStorei(GL_UNPACK_SKIP_PIXELS, prev_skip_pixels);
+        if (prev_skip_rows != 0) GLES.glPixelStorei(GL_UNPACK_SKIP_ROWS, prev_skip_rows);
 
         auto tex = mgGetTexObjectByTarget(target);
         tex->target = ConvertGLEnumToTextureTarget(target);
@@ -764,12 +786,17 @@ void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer) {
         tex->swizzle_param[2] = GL_BLUE;
         tex->swizzle_param[3] = GL_ALPHA;
 
-        GLES.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        GLES.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        GLES.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        GLES.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        GLES.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-        GLES.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+        // Set TBO texture parameters only on first use (avoids up to 6 glTexParameteri calls)
+        auto params_it = g_tbo_texture_params_set.find(boundTexture);
+        if (params_it == g_tbo_texture_params_set.end() || !params_it->second) {
+            GLES.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            GLES.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            GLES.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            GLES.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            GLES.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+            GLES.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+            g_tbo_texture_params_set[boundTexture] = true;
+        }
 
         // Restore GL state
         GLES.glBindBuffer(GL_PIXEL_UNPACK_BUFFER, prev_pixel_buffer_binding);
@@ -841,6 +868,7 @@ GLboolean glIsVertexArray(GLuint array) {
 void glBindVertexArray(GLuint array) {
     LOG()
     LOG_D("glBindVertexArray(%d)", array)
+
     bound_array = array;
 
     // update bound ibo

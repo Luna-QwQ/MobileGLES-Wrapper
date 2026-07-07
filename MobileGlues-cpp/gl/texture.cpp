@@ -30,6 +30,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <unordered_map>
+
+// Extern references to TBO emulation caches in buffer.cpp (invalidated on texture deletion)
+extern std::unordered_map<GLuint, bool> g_tbo_texture_params_set;
+extern std::unordered_map<GLuint, std::pair<GLuint, GLuint>> g_tbo_texture_dims;
 #ifdef __ANDROID__
 #include <android/log.h>
 #endif
@@ -571,14 +576,12 @@ static GLenum get_binding_for_target(GLenum target) {
     auto& __bindingSlot = __currentUnit.GetBindingSlot(targetR);                                                       \
     auto tex = __bindingSlot.GetBoundObject()
 
-// ============================================================================
-// glBindTexture (native, with 1D→2D mapping for legacy targets)
-// ============================================================================
-
 void glBindTexture(GLenum target, GLuint texture) {
     LOG()
     LOG_D("glBindTexture(%s, %d)", glEnumToString(target), texture)
     INIT_CHECK_GL_ERROR
+
+    const int currentUnitIndex = GetCurrentTextureUnitIndex();
 
     if (hardware && gl_state && hardware->emulate_texture_buffer && target == GL_TEXTURE_BUFFER) {
         GLES.glActiveTexture(GL_TEXTURE0 + 15);
@@ -589,8 +592,6 @@ void glBindTexture(GLenum target, GLuint texture) {
         GLES.glBindTexture(target, texture);
     }
     CHECK_GL_ERROR_NO_INIT
-
-    const int currentUnitIndex = GetCurrentTextureUnitIndex();
 
     // Track GL_TEXTURE_2D binding per-unit to avoid glGetIntegerv GPU queries
     if (target == GL_TEXTURE_2D) {
@@ -628,6 +629,15 @@ void glDeleteTextures(GLsizei n, const GLuint* textures) {
 
     for (GLsizei i = 0; i < n; ++i) {
         MarkTextureObjectForDeletion(textures[i]);
+        // Invalidate CPU-side texture binding tracking
+        for (int unit = 0; unit < MAX_TEXTURE_IMAGE_UNITS; ++unit) {
+            if (g_tracked_tex2d_binding[unit] == textures[i]) {
+                g_tracked_tex2d_binding[unit] = 0;
+            }
+        }
+        // Invalidate TBO emulation caches
+        g_tbo_texture_params_set.erase(textures[i]);
+        g_tbo_texture_dims.erase(textures[i]);
     }
 }
 
