@@ -312,6 +312,12 @@ void glGenBuffers(GLsizei n, GLuint* buffers) {
     }
 }
 
+// Binding caches for dirty-check optimization — declared here so glDeleteBuffers
+// can invalidate them when buffers are deleted.
+static GLuint g_last_gles_bound_buffer[BINDING_COUNT] = {0};
+static std::unordered_map<GLenum, std::unordered_map<GLuint, GLuint>> g_last_bound_range;
+static std::unordered_map<GLuint, GLuint> g_last_bound_vertex_buffer;
+
 void glDeleteBuffers(GLsizei n, const GLuint* buffers) {
     LOG()
     LOG_D("glDeleteBuffers(%i, %p)", n, buffers)
@@ -351,11 +357,6 @@ GLboolean glIsBuffer(GLuint buffer) {
 // ============================================================================
 // Buffer Binding (ES 3.2 native, with buffer map)
 // ============================================================================
-
-// Track the last buffer bound per target at the GLES level to avoid redundant
-// glBindBuffer calls. Each glBindBuffer is a driver call that may trigger
-// internal state validation, so skipping no-op rebinds reduces CPU overhead.
-static GLuint g_last_gles_bound_buffer[BINDING_COUNT] = {0};
 
 void glBindBuffer(GLenum target, GLuint buffer) {
     LOG()
@@ -491,9 +492,6 @@ void bindAllAtomicCounterAsSSBO() {
     }
 }
 
-// Track last bind per (target, index) to skip redundant glBindBufferRange calls
-static std::unordered_map<GLenum, std::unordered_map<GLuint, GLuint>> g_last_bound_range; // target -> index -> real_buffer
-
 void glBindBufferRange(GLenum target, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size) {
     LOG()
     LOG_D("glBindBufferRange, target = %s, index = %d, buffer = %d, offset = %p, size = %zi", glEnumToString(target),
@@ -591,9 +589,6 @@ void glBindBufferBase(GLenum target, GLuint index, GLuint buffer) {
 // ============================================================================
 // Vertex Buffer Binding (ES 3.2 native, with buffer map)
 // ============================================================================
-
-// Track last vertex buffer binding per index to skip redundant GLES calls
-static std::unordered_map<GLuint, GLuint> g_last_bound_vertex_buffer; // bindingindex -> real_buffer
 
 void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) {
     LOG()
