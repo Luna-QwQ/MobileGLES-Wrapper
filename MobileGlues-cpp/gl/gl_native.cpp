@@ -17,7 +17,6 @@
 #include "log.h"
 #include "../gles/loader.h"
 #include "mg.h"
-#include "ComputeShader.h"
 #include <GLES3/gl32.h>
 
 #define DEBUG 0
@@ -353,7 +352,6 @@ NATIVE_FUNCTION_HEAD(void, glDrawElementsInstancedBaseVertex, GLenum mode, GLsiz
 // glDispatchCompute is handled in drawing.cpp (atomic counter emulation)
 extern "C" GLAPI GLAPIENTRY void glDispatchComputeIndirectARB(GLintptr indirect) __attribute__((alias("glDispatchComputeIndirect")));
 extern "C" GLAPI GLAPIENTRY void glDispatchComputeIndirect(GLintptr indirect) {
-    ComputeShader_FlushPendingDispatch();
     GLES.glDispatchComputeIndirect(indirect);
 }
 // glDrawBuffers is handled in framebuffer.cpp (attachment remapping)
@@ -422,17 +420,14 @@ NATIVE_FUNCTION_HEAD(void, glFrontFace, GLenum mode) NATIVE_FUNCTION_END_NO_RETU
 // Finish and Flush
 // ============================================================================
 
-// glFinish / glFlush: flush pending compute dispatches before
-// the GPU synchronization point to ensure correct ordering.
+// glFinish / glFlush
 extern "C" GLAPI GLAPIENTRY void glFinishARB(void) __attribute__((alias("glFinish")));
 extern "C" GLAPI GLAPIENTRY void glFinish(void) {
-    ComputeShader_FlushPendingDispatch();
     GLES.glFinish();
 }
 
 extern "C" GLAPI GLAPIENTRY void glFlushARB(void) __attribute__((alias("glFlush")));
 extern "C" GLAPI GLAPIENTRY void glFlush(void) {
-    ComputeShader_FlushPendingDispatch();
     GLES.glFlush();
 }
 
