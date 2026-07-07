@@ -587,7 +587,7 @@ void glBindTexture(GLenum target, GLuint texture) {
         if (targetR != TextureTarget::UNKNWON) {
             auto& bindingSlot = GetTextureUnit(currentUnitIndex).GetBindingSlot(targetR);
             auto* boundObj = bindingSlot.GetBoundObject();
-            if (boundObj && boundObj->texture == texture) [[likely]] {
+            if (boundObj && boundObj->texture == texture) {
                 // Already bound — still need to update GL_TEXTURE_2D tracking
                 if (target == GL_TEXTURE_2D) {
                     g_tracked_tex2d_binding[currentUnitIndex] = texture;

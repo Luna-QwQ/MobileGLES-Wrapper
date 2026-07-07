@@ -338,7 +338,7 @@ void glBindBuffer(GLenum target, GLuint buffer) {
     // Minecraft Java rebinds the same VBOs thousands of times per frame —
     // avoiding the GPU driver call here is a significant CPU saving.
     int idx = binding_target_to_index(target);
-    if (idx >= 0 && g_bound_buffers_arr[idx] == buffer) [[likely]] {
+    if (idx >= 0 && g_bound_buffers_arr[idx] == buffer) {
         // Still need to update IBO tracking for ELEMENT_ARRAY_BUFFER
         if (target == GL_ELEMENT_ARRAY_BUFFER) {
             update_vao_ibo_binding(find_bound_array(), buffer);
