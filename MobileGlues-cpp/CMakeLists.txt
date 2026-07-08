@@ -96,8 +96,18 @@ set(SOURCES
     Util/Metrics/TextureMetrics.cpp
 )
 
-# Create shared library
-add_library(${PROJECT_NAME} SHARED ${SOURCES})
+# Handle STATICLIB option (CI compatibility)
+option(STATICLIB "Build as static library" OFF)
+
+# Create library
+if(STATICLIB)
+    add_library(${PROJECT_NAME} STATIC ${SOURCES})
+else()
+    add_library(${PROJECT_NAME} SHARED ${SOURCES})
+endif()
+
+# CI compatibility: provide 'mobileglues' make target
+add_custom_target(mobileglues DEPENDS ${PROJECT_NAME})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
