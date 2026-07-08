@@ -1,0 +1,47 @@
+name: Build Test (Linux)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+        static: [ON, OFF]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1-mesa-dev libgles2-mesa-dev
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DSTATICLIB=${{ matrix.static }}
+        working-directory: MobileGlues-cpp
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.build_type }} --target mobileglues -j$(nproc)
+        working-directory: MobileGlues-cpp
+
+      - name: Verify output
+        run: |
+          if [ "${{ matrix.static }}" = "ON" ]; then
+            LIB="libmobileglues.a"
+          else
+            LIB="libmobileglues.so"
+          fi
+          echo "Checking $LIB ..."
+          file "MobileGlues-cpp/build/$LIB"
+          stat "MobileGlues-cpp/build/$LIB"
