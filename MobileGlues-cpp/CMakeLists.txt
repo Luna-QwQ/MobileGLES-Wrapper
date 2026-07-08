@@ -106,7 +106,8 @@ else()
     add_library(${PROJECT_NAME} SHARED ${SOURCES})
 endif()
 
-# CI compatibility: provide 'mobileglues' make target
+# CI compatibility: output as libmobileglues.so and provide 'mobileglues' make target
+set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME mobileglues)
 add_custom_target(mobileglues DEPENDS ${PROJECT_NAME})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
