@@ -9,11 +9,6 @@
 //   - Queries that exist in ES 3.2 core are forwarded directly to GLES.
 //   - Queries that do NOT exist in ES 3.2 core (desktop GL queries) are
 //     simulated via CPU-side logic, caching, or synthetic responses.
-//
-// DirectGLES pattern:
-//   - Public function = thin wrapper with Lock/Unlock, delegates to _State
-//   - _State function = validation, state management, GLES calls
-//   - Error recording via GLState.errorState.RecordError()
 
 #include "getter.h"
 #include "buffer.h"
@@ -34,70 +29,14 @@
 Version GLVersion;
 
 // =============================================================================
-// Section: Error Code Conversion
-// =============================================================================
-
-static GLenum ConvertErrorCodeToGLEnum(ErrorCode code) {
-    switch (code) {
-    case ErrorCode::NoError:                    return GL_NO_ERROR;
-    case ErrorCode::InvalidEnum:                return GL_INVALID_ENUM;
-    case ErrorCode::InvalidValue:               return GL_INVALID_VALUE;
-    case ErrorCode::InvalidOperation:           return GL_INVALID_OPERATION;
-    case ErrorCode::InvalidFramebufferOperation: return GL_INVALID_FRAMEBUFFER_OPERATION;
-    case ErrorCode::OutOfMemory:                return GL_OUT_OF_MEMORY;
-    case ErrorCode::StackUnderflow:             return GL_STACK_UNDERFLOW;
-    case ErrorCode::StackOverflow:              return GL_STACK_OVERFLOW;
-    default:                                    return GL_NO_ERROR;
-    }
-}
-
-// =============================================================================
-// Section: glGetError
-// =============================================================================
-
-static GLenum GetError_State() {
-#if GLOBAL_DEBUG
-    // In debug mode, consume and report real GLES errors.
-    // In release mode, skip the glGetError() GPU round-trip entirely —
-    // glGetError is an implicit glFinish on many drivers, causing a
-    // full pipeline stall. Since we use our own ErrorState for tracking,
-    // there is no need to query the real error queue in release mode.
-    GLenum err = GLES.glGetError();
-    if (err != GL_NO_ERROR) {
-        LOG_W("glGetError: real GLES error -> %d", err)
-        LOG_W("Now try to cheat.")
-    }
-#endif
-    // Check our CPU-side error state
-    if (!GLState.errorState.HasGLError()) return GL_NO_ERROR;
-    auto error = GLState.errorState.PopGLError();
-    if (!error) return GL_NO_ERROR;
-    return ConvertErrorCodeToGLEnum(error->code);
-}
-
-GLAPI GLAPIENTRY GLenum glGetError() {
-    GLState.Lock();
-    GLenum result = GetError_State();
-    GLState.Unlock();
-    return result;
-}
-
-// =============================================================================
 // Section: glGetIntegerv
 //   ES 3.2 native queries → forwarded to GLES.glGetIntegerv
 //   Non-native (desktop) queries → CPU simulation
 // =============================================================================
 
-static void GetIntegerv_State(GLenum pname, GLint* params) {
+void glGetIntegerv(GLenum pname, GLint* params) {
     LOG()
     LOG_D("glGetIntegerv, pname: %s", glEnumToString(pname))
-
-    if (!params) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glGetIntegerv: params is null"));
-        return;
-    }
-
     switch (pname) {
 
     // -------------------------------------------------------------------------
@@ -153,7 +92,7 @@ static void GetIntegerv_State(GLenum pname, GLint* params) {
     case GL_MAX_TEXTURE_IMAGE_UNITS: {
         int es_params = 16;
         GLES.glGetIntegerv(pname, &es_params);
-        (*params) = es_params * 2;
+        CHECK_GL_ERROR(*params) = es_params * 2;
         break;
     }
 
@@ -164,59 +103,26 @@ static void GetIntegerv_State(GLenum pname, GLint* params) {
         break;
 
     // -------------------------------------------------------------------------
-    // Buffer binding queries — CPU simulation via GLState buffer tracking
+    // Buffer binding queries — CPU simulation via our own binding tracking
     // -------------------------------------------------------------------------
     case GL_ARRAY_BUFFER_BINDING:
-        (*params) = (int)find_bound_buffer(GL_ARRAY_BUFFER_BINDING);
-        LOG_D("  -> %d", *params)
-        break;
     case GL_ATOMIC_COUNTER_BUFFER_BINDING:
-        (*params) = (int)find_bound_buffer(GL_ATOMIC_COUNTER_BUFFER_BINDING);
-        LOG_D("  -> %d", *params)
-        break;
     case GL_COPY_READ_BUFFER_BINDING:
-        (*params) = (int)find_bound_buffer(GL_COPY_READ_BUFFER_BINDING);
-        LOG_D("  -> %d", *params)
-        break;
     case GL_COPY_WRITE_BUFFER_BINDING:
-        (*params) = (int)find_bound_buffer(GL_COPY_WRITE_BUFFER_BINDING);
-        LOG_D("  -> %d", *params)
-        break;
     case GL_DRAW_INDIRECT_BUFFER_BINDING:
-        (*params) = (int)find_bound_buffer(GL_DRAW_INDIRECT_BUFFER_BINDING);
-        LOG_D("  -> %d", *params)
-        break;
     case GL_DISPATCH_INDIRECT_BUFFER_BINDING:
-        (*params) = (int)find_bound_buffer(GL_DISPATCH_INDIRECT_BUFFER_BINDING);
-        LOG_D("  -> %d", *params)
-        break;
     case GL_ELEMENT_ARRAY_BUFFER_BINDING:
-        (*params) = (int)find_bound_buffer(GL_ELEMENT_ARRAY_BUFFER_BINDING);
-        LOG_D("  -> %d", *params)
-        break;
     case GL_PIXEL_PACK_BUFFER_BINDING:
-        (*params) = (int)find_bound_buffer(GL_PIXEL_PACK_BUFFER_BINDING);
-        LOG_D("  -> %d", *params)
-        break;
     case GL_PIXEL_UNPACK_BUFFER_BINDING:
-        (*params) = (int)find_bound_buffer(GL_PIXEL_UNPACK_BUFFER_BINDING);
-        LOG_D("  -> %d", *params)
-        break;
     case GL_SHADER_STORAGE_BUFFER_BINDING:
-        (*params) = (int)find_bound_buffer(GL_SHADER_STORAGE_BUFFER_BINDING);
-        LOG_D("  -> %d", *params)
-        break;
     case GL_TRANSFORM_FEEDBACK_BUFFER_BINDING:
-        (*params) = (int)find_bound_buffer(GL_TRANSFORM_FEEDBACK_BUFFER_BINDING);
-        LOG_D("  -> %d", *params)
-        break;
     case GL_UNIFORM_BUFFER_BINDING:
-        (*params) = (int)find_bound_buffer(GL_UNIFORM_BUFFER_BINDING);
+        (*params) = (int)find_bound_buffer(pname);
         LOG_D("  -> %d", *params)
         break;
 
     // -------------------------------------------------------------------------
-    // VAO binding query — CPU simulation via GLState vertexArray tracking
+    // VAO binding query — CPU simulation via our own binding tracking
     // -------------------------------------------------------------------------
     case GL_VERTEX_ARRAY_BINDING:
         (*params) = (int)find_bound_array();
@@ -232,10 +138,26 @@ static void GetIntegerv_State(GLenum pname, GLint* params) {
     }
 }
 
-GLAPI GLAPIENTRY void glGetIntegerv(GLenum pname, GLint* params) {
-    GLState.Lock();
-    GetIntegerv_State(pname, params);
-    GLState.Unlock();
+// =============================================================================
+// Section: glGetError
+//   Always returns GL_NO_ERROR. Internal GLES errors are silently consumed.
+// =============================================================================
+
+GLenum glGetError() {
+    LOG()
+#if GLOBAL_DEBUG
+    // In debug mode, consume and report real GLES errors.
+    // In release mode, skip the glGetError() GPU round-trip entirely —
+    // glGetError is an implicit glFinish on many drivers, causing a
+    // full pipeline stall. Since we always return GL_NO_ERROR to the
+    // caller, there is no need to query the real error queue.
+    GLenum err = GLES.glGetError();
+    if (err != GL_NO_ERROR) {
+        LOG_W("glGetError\n -> %d", err)
+        LOG_W("Now try to cheat.")
+    }
+#endif
+    return GL_NO_ERROR;
 }
 
 // =============================================================================
@@ -363,8 +285,8 @@ static std::string getGLESName() {
 
 void set_es_version() {
     std::string ESVersionStr = getBeforeThirdSpace(std::string((const char*)GLES.glGetString(GL_VERSION)));
-    GLState.es_version = 320;
-    LOG_I("OpenGL ES Version: %s (%d)", ESVersionStr.c_str(), GLState.es_version)
+    hardware->es_version = 320;
+    LOG_I("OpenGL ES Version: %s (%d)", ESVersionStr.c_str(), hardware->es_version)
 }
 
 // =============================================================================
@@ -377,7 +299,7 @@ static std::string rendererString;
 static std::string vendorString;
 static std::string versionString;
 
-static const GLubyte* GetString_State(GLenum name) {
+const GLubyte* glGetString(GLenum name) {
     LOG()
     LOG_D("glGetString, %s", glEnumToString(name))
 
@@ -569,20 +491,13 @@ static const GLubyte* GetString_State(GLenum name) {
     }
 }
 
-GLAPI GLAPIENTRY const GLubyte* glGetString(GLenum name) {
-    GLState.Lock();
-    const GLubyte* result = GetString_State(name);
-    GLState.Unlock();
-    return result;
-}
-
 // =============================================================================
 // Section: glGetStringi
 //   CPU simulation: tokenizes the synthetic glGetString output into parts,
 //   then returns the requested part by index.
 // =============================================================================
 
-static const GLubyte* GetStringi_State(GLenum name, GLuint index) {
+const GLubyte* glGetStringi(GLenum name, GLuint index) {
     LOG()
 
     if (name == GL_EXTENSIONS + GL_BACKEND_GETTER_MG && global_settings.hide_mg_env_level == HideMGEnvLevel::Disabled) {
@@ -667,8 +582,6 @@ static const GLubyte* GetStringi_State(GLenum name, GLuint index) {
     for (auto& cache : caches) {
         if (cache.name == name) {
             if (index >= cache.count) {
-                GLState.errorState.RecordError(ErrorCode::InvalidValue,
-                    std::make_unique<GenericErrorInfo>("glGetStringi: index out of range"));
                 return nullptr;
             }
             return (const GLubyte*)cache.parts[index];
@@ -678,56 +591,23 @@ static const GLubyte* GetStringi_State(GLenum name, GLuint index) {
     return nullptr;
 }
 
-GLAPI GLAPIENTRY const GLubyte* glGetStringi(GLenum name, GLuint index) {
-    GLState.Lock();
-    const GLubyte* result = GetStringi_State(name, index);
-    GLState.Unlock();
-    return result;
-}
-
 // =============================================================================
 // Section: glGetQueryObject — ES 3.2 native extensions
 //   Forwarded to GLES if the extension is available.
 // =============================================================================
 
-static void GetQueryObjectiv_State(GLuint id, GLenum pname, GLint* params) {
+void glGetQueryObjectiv(GLuint id, GLenum pname, GLint* params) {
     LOG()
-
-    if (!params) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glGetQueryObjectiv: params is null"));
-        return;
-    }
-
     if (GLES.glGetQueryObjectivEXT) {
         GLES.glGetQueryObjectivEXT(id, pname, params);
         CHECK_GL_ERROR
     }
 }
 
-GLAPI GLAPIENTRY void glGetQueryObjectiv(GLuint id, GLenum pname, GLint* params) {
-    GLState.Lock();
-    GetQueryObjectiv_State(id, pname, params);
-    GLState.Unlock();
-}
-
-static void GetQueryObjecti64v_State(GLuint id, GLenum pname, GLint64* params) {
+void glGetQueryObjecti64v(GLuint id, GLenum pname, GLint64* params) {
     LOG()
-
-    if (!params) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glGetQueryObjecti64v: params is null"));
-        return;
-    }
-
     if (GLES.glGetQueryObjecti64vEXT) {
         GLES.glGetQueryObjecti64vEXT(id, pname, params);
         CHECK_GL_ERROR
     }
-}
-
-GLAPI GLAPIENTRY void glGetQueryObjecti64v(GLuint id, GLenum pname, GLint64* params) {
-    GLState.Lock();
-    GetQueryObjecti64v_State(id, pname, params);
-    GLState.Unlock();
 }

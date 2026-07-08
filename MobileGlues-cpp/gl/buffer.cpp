@@ -7,7 +7,6 @@
 
 // ============================================================================
 // ES 3.2 native → native, ES 3.2 not native → CPU simulation
-// Architecture: DirectGLES — public wrappers → _State (validation + state) → _Backend (GLES call)
 // ============================================================================
 
 #include "buffer.h"
@@ -20,17 +19,24 @@
 // Internal State: Buffer Map Management
 // ============================================================================
 
+GLuint bound_array;
 static GLint maxBufferId = 0;
 static GLint maxArrayId = 0;
 
+static std::vector<GLuint> g_gen_buffers;
+static std::vector<char> g_gen_buffer_exists;
 static std::vector<GLuint> g_free_buffer_ids;
+
+static std::vector<GLuint> g_gen_arrays;
+static std::vector<char> g_gen_array_exists;
 static std::vector<GLuint> g_free_array_ids;
 
-// Per-VAO element array buffer tracking (virtual VAO → virtual IBO)
+static std::vector<size_t> g_buffer_datasize;
+
 static std::vector<GLuint> g_element_array_buffer_per_vao;
 
 // ============================================================================
-// Binding Index Helpers (for backward-compatible set_bound_buffer_by_target)
+// Buffer Binding Index Tracking
 // ============================================================================
 
 enum BindingIndex : int {
@@ -48,6 +54,115 @@ enum BindingIndex : int {
     BI_UNIFORM_BUFFER,
     BINDING_COUNT
 };
+static std::array<GLuint, BINDING_COUNT> g_bound_buffers_arr = {0};
+
+// ============================================================================
+// Buffer Map Helpers: Capacity & Lifecycle
+// ============================================================================
+
+static inline int ensure_buffer_capacity(GLuint id) {
+    if (id < (GLuint)g_gen_buffers.size()) [[likely]] return 0;
+    g_gen_buffers.resize(id + 1, 0);
+    g_gen_buffer_exists.resize(id + 1, 0);
+    if (g_buffer_datasize.size() <= (size_t)id) g_buffer_datasize.resize(id + 1, 0);
+    return 0;
+}
+
+static inline int ensure_array_capacity(GLuint id) {
+    if (id < (GLuint)g_gen_arrays.size()) [[likely]] return 0;
+    g_gen_arrays.resize(id + 1, 0);
+    g_gen_array_exists.resize(id + 1, 0);
+    if (g_element_array_buffer_per_vao.size() <= (size_t)id) g_element_array_buffer_per_vao.resize(id + 1, 0);
+    return 0;
+}
+
+GLuint gen_buffer() {
+    if (!g_free_buffer_ids.empty()) {
+        GLuint id = g_free_buffer_ids.back();
+        g_free_buffer_ids.pop_back();
+        ensure_buffer_capacity(id);
+        g_gen_buffers[id] = 0;
+        g_gen_buffer_exists[id] = 1;
+        g_buffer_datasize[id] = 0;
+        if (id > (GLuint)maxBufferId) maxBufferId = id;
+        return id;
+    }
+    maxBufferId++;
+    ensure_buffer_capacity((GLuint)maxBufferId);
+    g_gen_buffers[maxBufferId] = 0;
+    g_gen_buffer_exists[maxBufferId] = 1;
+    g_buffer_datasize[maxBufferId] = 0;
+    return (GLuint)maxBufferId;
+}
+
+GLboolean has_buffer(GLuint key) {
+    return key < g_gen_buffer_exists.size() ? (g_gen_buffer_exists[key] != 0) : 0;
+}
+
+void modify_buffer(GLuint key, GLuint value) {
+    if (key >= g_gen_buffers.size()) [[unlikely]] ensure_buffer_capacity(key);
+    g_gen_buffers[key] = value;
+    g_gen_buffer_exists[key] = 1;
+}
+
+void remove_buffer(GLuint key) {
+    if (key < g_gen_buffer_exists.size() && g_gen_buffer_exists[key]) {
+        g_gen_buffer_exists[key] = 0;
+        g_gen_buffers[key] = 0;
+        if (key < g_buffer_datasize.size()) g_buffer_datasize[key] = 0;
+        g_free_buffer_ids.push_back(key);
+    }
+}
+
+GLuint find_real_buffer(GLuint key) {
+    if (key < g_gen_buffers.size() && g_gen_buffer_exists[key]) return g_gen_buffers[key];
+    return 0;
+}
+
+// Combined lookup: returns {real_buffer, exists} in a single bounds check.
+// g_gen_buffers and g_gen_buffer_exists are always resized together,
+// so checking one is sufficient for both.
+static inline std::pair<GLuint, bool> find_real_buffer_with_exists(GLuint key) {
+    if (key < g_gen_buffers.size() && g_gen_buffer_exists[key]) [[likely]]
+        return {g_gen_buffers[key], true};
+    return {0, false};
+}
+
+// Fast-path: direct assignment without capacity checks, for use when the caller
+// has already verified the buffer exists (e.g. after find_real_buffer_with_exists).
+// Avoids redundant ensure_buffer_capacity in hot paths like glBindBuffer,
+// glBindBufferRange, glBindBufferBase, glBindVertexBuffer, glTexBuffer.
+static inline void modify_buffer_direct(GLuint key, GLuint value) {
+    g_gen_buffers[key] = value;
+}
+
+GLuint get_ibo_by_vao(GLuint vao) {
+    if (vao < g_element_array_buffer_per_vao.size()) return g_element_array_buffer_per_vao[vao];
+    return 0;
+}
+
+GLuint find_bound_array() {
+    return bound_array;
+}
+
+void update_vao_ibo_binding(GLuint vao, GLuint ibo) {
+    ensure_array_capacity(vao);
+    g_element_array_buffer_per_vao[vao] = ibo;
+}
+
+void set_buffer_data_size(GLuint buffer, size_t size) {
+    ensure_buffer_capacity(buffer);
+    g_buffer_datasize[buffer] = size;
+}
+
+size_t get_buffer_data_size(GLuint buffer) {
+    if (buffer < g_buffer_datasize.size()) return g_buffer_datasize[buffer];
+    return 0;
+}
+
+// ============================================================================
+// Buffer Binding Helpers
+// ============================================================================
 
 static inline int binding_target_to_index(GLenum target) {
     switch (target) {
@@ -67,135 +182,28 @@ static inline int binding_target_to_index(GLenum target) {
     }
 }
 
-// ============================================================================
-// Buffer Map Helpers: Capacity & Lifecycle (backward-compatible API)
-// ============================================================================
-
-static inline void ensure_array_capacity(GLuint id) {
-    if (id < (GLuint)g_element_array_buffer_per_vao.size()) [[likely]] return;
-    g_element_array_buffer_per_vao.resize(id + 1, 0);
-}
-
-GLuint gen_buffer() {
-    GLuint id;
-    if (!g_free_buffer_ids.empty()) {
-        id = g_free_buffer_ids.back();
-        g_free_buffer_ids.pop_back();
-    } else {
-        id = (GLuint)(++maxBufferId);
-    }
-    GLState.buffer.bufferMap[id] = 0;
-    GLState.buffer.bufferInfo[id] = MGBufferInfo{};
-    return id;
-}
-
-GLboolean has_buffer(GLuint key) {
-    auto it = GLState.buffer.bufferMap.find(key);
-    return (it != GLState.buffer.bufferMap.end()) ? GL_TRUE : GL_FALSE;
-}
-
-void modify_buffer(GLuint key, GLuint value) {
-    GLState.buffer.bufferMap[key] = value;
-    if (value != 0) {
-        GLState.buffer.bufferMapReverse[value] = key;
-    }
-}
-
-void remove_buffer(GLuint key) {
-    auto it = GLState.buffer.bufferMap.find(key);
-    if (it != GLState.buffer.bufferMap.end()) {
-        GLuint realId = it->second;
-        if (realId != 0) {
-            GLState.buffer.bufferMapReverse.erase(realId);
-        }
-        GLState.buffer.bufferMap.erase(it);
-        GLState.buffer.bufferInfo.erase(key);
-        g_free_buffer_ids.push_back(key);
-        // Unbind from all targets
-        for (auto& kv : GLState.buffer.boundBuffer) {
-            if (kv.second == key) kv.second = 0;
-        }
-    }
-}
-
-GLuint find_real_buffer(GLuint key) {
-    auto it = GLState.buffer.bufferMap.find(key);
-    return (it != GLState.buffer.bufferMap.end()) ? it->second : 0;
-}
-
-// Combined lookup: returns {real_buffer, exists} in a single lookup.
-static inline std::pair<GLuint, bool> find_real_buffer_with_exists(GLuint key) {
-    auto it = GLState.buffer.bufferMap.find(key);
-    if (it != GLState.buffer.bufferMap.end()) [[likely]]
-        return {it->second, true};
-    return {0, false};
-}
-
-// Fast-path: direct assignment without checks, for use when the caller
-// has already verified the buffer exists.
-static inline void modify_buffer_direct(GLuint key, GLuint value) {
-    GLState.buffer.bufferMap[key] = value;
-    if (value != 0) {
-        GLState.buffer.bufferMapReverse[value] = key;
-    }
-}
-
-GLuint get_ibo_by_vao(GLuint vao) {
-    if (vao < (GLuint)g_element_array_buffer_per_vao.size())
-        return g_element_array_buffer_per_vao[vao];
-    return 0;
-}
-
-GLuint find_bound_array() {
-    return GLState.vertexArray.currentVAO;
-}
-
-void update_vao_ibo_binding(GLuint vao, GLuint ibo) {
-    ensure_array_capacity(vao);
-    g_element_array_buffer_per_vao[vao] = ibo;
-}
-
-void set_buffer_data_size(GLuint buffer, size_t size) {
-    auto it = GLState.buffer.bufferInfo.find(buffer);
-    if (it != GLState.buffer.bufferInfo.end()) {
-        it->second.size = size;
-    } else {
-        GLState.buffer.bufferInfo[buffer] = MGBufferInfo{};
-        GLState.buffer.bufferInfo[buffer].size = size;
-    }
-}
-
-size_t get_buffer_data_size(GLuint buffer) {
-    auto it = GLState.buffer.bufferInfo.find(buffer);
-    if (it != GLState.buffer.bufferInfo.end()) return it->second.size;
-    return 0;
-}
-
-// ============================================================================
-// Buffer Binding Helpers
-// ============================================================================
-
 void set_bound_buffer_by_target(GLenum target, GLuint buffer) {
-    GLState.buffer.boundBuffer[target] = buffer;
+    int idx = binding_target_to_index(target);
+    if (idx >= 0) g_bound_buffers_arr[idx] = buffer;
 }
 
 GLuint find_bound_buffer(GLenum key) {
     // Special case: ELEMENT_ARRAY_BUFFER uses VAO tracking
     if (key == GL_ELEMENT_ARRAY_BUFFER_BINDING) {
-        return get_ibo_by_vao(GLState.vertexArray.currentVAO);
+        return get_ibo_by_vao(find_bound_array());
     }
     switch (key) {
-    case GL_ARRAY_BUFFER_BINDING:              return GLState.buffer.boundBuffer[GL_ARRAY_BUFFER];
-    case GL_ATOMIC_COUNTER_BUFFER_BINDING:     return GLState.buffer.boundBuffer[GL_ATOMIC_COUNTER_BUFFER];
-    case GL_COPY_READ_BUFFER_BINDING:          return GLState.buffer.boundBuffer[GL_COPY_READ_BUFFER];
-    case GL_COPY_WRITE_BUFFER_BINDING:         return GLState.buffer.boundBuffer[GL_COPY_WRITE_BUFFER];
-    case GL_DRAW_INDIRECT_BUFFER_BINDING:      return GLState.buffer.boundBuffer[GL_DRAW_INDIRECT_BUFFER];
-    case GL_DISPATCH_INDIRECT_BUFFER_BINDING:  return GLState.buffer.boundBuffer[GL_DISPATCH_INDIRECT_BUFFER];
-    case GL_PIXEL_PACK_BUFFER_BINDING:         return GLState.buffer.boundBuffer[GL_PIXEL_PACK_BUFFER];
-    case GL_PIXEL_UNPACK_BUFFER_BINDING:       return GLState.buffer.boundBuffer[GL_PIXEL_UNPACK_BUFFER];
-    case GL_SHADER_STORAGE_BUFFER_BINDING:     return GLState.buffer.boundBuffer[GL_SHADER_STORAGE_BUFFER];
-    case GL_TRANSFORM_FEEDBACK_BUFFER_BINDING: return GLState.buffer.boundBuffer[GL_TRANSFORM_FEEDBACK_BUFFER];
-    case GL_UNIFORM_BUFFER_BINDING:            return GLState.buffer.boundBuffer[GL_UNIFORM_BUFFER];
+    case GL_ARRAY_BUFFER_BINDING:              return g_bound_buffers_arr[BI_ARRAY_BUFFER];
+    case GL_ATOMIC_COUNTER_BUFFER_BINDING:     return g_bound_buffers_arr[BI_ATOMIC_COUNTER];
+    case GL_COPY_READ_BUFFER_BINDING:          return g_bound_buffers_arr[BI_COPY_READ];
+    case GL_COPY_WRITE_BUFFER_BINDING:         return g_bound_buffers_arr[BI_COPY_WRITE];
+    case GL_DRAW_INDIRECT_BUFFER_BINDING:      return g_bound_buffers_arr[BI_DRAW_INDIRECT];
+    case GL_DISPATCH_INDIRECT_BUFFER_BINDING:  return g_bound_buffers_arr[BI_DISPATCH_INDIRECT];
+    case GL_PIXEL_PACK_BUFFER_BINDING:         return g_bound_buffers_arr[BI_PIXEL_PACK];
+    case GL_PIXEL_UNPACK_BUFFER_BINDING:       return g_bound_buffers_arr[BI_PIXEL_UNPACK];
+    case GL_SHADER_STORAGE_BUFFER_BINDING:     return g_bound_buffers_arr[BI_SHADER_STORAGE];
+    case GL_TRANSFORM_FEEDBACK_BUFFER_BINDING: return g_bound_buffers_arr[BI_TRANSFORM_FEEDBACK];
+    case GL_UNIFORM_BUFFER_BINDING:            return g_bound_buffers_arr[BI_UNIFORM_BUFFER];
     default:                                   return 0;
     }
 }
@@ -219,62 +227,50 @@ static GLenum get_binding_query(GLenum target) {
 }
 
 // ============================================================================
-// Vertex Array Map Helpers (backward-compatible API)
+// Vertex Array Map Helpers
 // ============================================================================
 
 GLuint gen_array() {
-    GLuint id;
     if (!g_free_array_ids.empty()) {
-        id = g_free_array_ids.back();
+        GLuint id = g_free_array_ids.back();
         g_free_array_ids.pop_back();
-    } else {
-        id = (GLuint)(++maxArrayId);
+        ensure_array_capacity(id);
+        g_gen_arrays[id] = 0;
+        g_gen_array_exists[id] = 1;
+        g_element_array_buffer_per_vao[id] = 0;
+        if (id > (GLuint)maxArrayId) maxArrayId = id;
+        return id;
     }
-    ensure_array_capacity(id);
-    GLState.buffer.vaoMap[id] = 0;
-    g_element_array_buffer_per_vao[id] = 0;
-    return id;
+    maxArrayId++;
+    ensure_array_capacity((GLuint)maxArrayId);
+    g_gen_arrays[maxArrayId] = 0;
+    g_gen_array_exists[maxArrayId] = 1;
+    g_element_array_buffer_per_vao[maxArrayId] = 0;
+    return (GLuint)maxArrayId;
 }
 
 GLboolean has_array(GLuint key) {
-    auto it = GLState.buffer.vaoMap.find(key);
-    return (it != GLState.buffer.vaoMap.end()) ? GL_TRUE : GL_FALSE;
+    return key < g_gen_array_exists.size() ? (g_gen_array_exists[key] != 0) : 0;
 }
 
 void modify_array(GLuint key, GLuint value) {
-    GLState.buffer.vaoMap[key] = value;
-    if (value != 0) {
-        GLState.buffer.vaoMapReverse[value] = key;
-    }
+    if (key >= g_gen_arrays.size()) ensure_array_capacity(key);
+    g_gen_arrays[key] = value;
+    g_gen_array_exists[key] = 1;
 }
 
 void remove_array(GLuint key) {
-    auto it = GLState.buffer.vaoMap.find(key);
-    if (it != GLState.buffer.vaoMap.end()) {
-        GLuint realId = it->second;
-        if (realId != 0) {
-            GLState.buffer.vaoMapReverse.erase(realId);
-        }
-        GLState.buffer.vaoMap.erase(it);
-        if (key < (GLuint)g_element_array_buffer_per_vao.size())
-            g_element_array_buffer_per_vao[key] = 0;
+    if (key < g_gen_array_exists.size() && g_gen_array_exists[key]) {
+        g_gen_array_exists[key] = 0;
+        g_gen_arrays[key] = 0;
+        if (key < g_element_array_buffer_per_vao.size()) g_element_array_buffer_per_vao[key] = 0;
         g_free_array_ids.push_back(key);
-        if (GLState.vertexArray.currentVAO == key)
-            GLState.vertexArray.currentVAO = 0;
     }
 }
 
 GLuint find_real_array(GLuint key) {
-    auto it = GLState.buffer.vaoMap.find(key);
-    return (it != GLState.buffer.vaoMap.end()) ? it->second : 0;
-}
-
-// ============================================================================
-// Buffer Target Validation
-// ============================================================================
-
-static bool is_valid_buffer_target(GLenum target) {
-    return binding_target_to_index(target) >= 0;
+    if (key < g_gen_arrays.size() && g_gen_array_exists[key]) return g_gen_arrays[key];
+    return 0;
 }
 
 // ============================================================================
@@ -282,134 +278,69 @@ static bool is_valid_buffer_target(GLenum target) {
 // ============================================================================
 
 void InitBufferMap(size_t expectedSize) {
-    // Reserve space in GLState maps (UnorderedMap doesn't have reserve, but we pre-allocate the free list)
-    g_free_buffer_ids.reserve(expectedSize + 2);
+    g_gen_buffers.reserve(expectedSize + 2);
+    g_gen_buffer_exists.reserve(expectedSize + 2);
+    g_buffer_datasize.reserve(expectedSize + 2);
+    g_gen_buffers.resize(1, 0);
+    g_gen_buffer_exists.resize(1, 0);
+    g_buffer_datasize.resize(1, 0);
 }
 
 void InitVertexArrayMap(size_t expectedSize) {
-    g_free_array_ids.reserve(expectedSize + 2);
+    g_gen_arrays.reserve(expectedSize + 2);
+    g_gen_array_exists.reserve(expectedSize + 2);
     g_element_array_buffer_per_vao.reserve(expectedSize + 2);
+    g_gen_arrays.resize(1, 0);
+    g_gen_array_exists.resize(1, 0);
     g_element_array_buffer_per_vao.resize(1, 0);
 }
 
 // ============================================================================
-// Atomic Counter Buffer Emulation State
-// ============================================================================
-
-struct atomic_buffer {
-    GLuint id;
-    GLsizeiptr size;
-    GLintptr offset;
-};
-
-static std::vector<atomic_buffer> g_buffer_map_atomic_buffer_info;
-static std::vector<GLuint> g_buffer_map_ssbo_id;
-
-void bindAllAtomicCounterAsSSBO() {
-    const size_t count = g_buffer_map_atomic_buffer_info.size();
-    for (size_t i = 0; i < count; ++i) {
-        atomic_buffer buf = g_buffer_map_atomic_buffer_info[i];
-        if (buf.id != 0) {
-            GLuint realID = find_real_buffer(buf.id);
-            GLES.glBindBufferRange(GL_SHADER_STORAGE_BUFFER, (GLuint)i, realID, buf.offset, buf.size);
-            LOG_D("Bound atomic counter buffer %u(real: %u) as SSBO at index %zu", buf.id, realID, i);
-        }
-    }
-}
-
-// ============================================================================
-// Buffer Object Lifecycle — Backend (ES 3.2 native)
-// ============================================================================
-
-static void GenBuffers_Backend(GLsizei n, GLuint* /*buffers*/) {
-    // No GLES call needed here; real IDs are lazily created on first bind
-    (void)n;
-}
-
-static void DeleteBuffers_Backend(GLsizei n, const GLuint* buffers) {
-    for (int i = 0; i < n; ++i) {
-        auto [real_buff, exists] = find_real_buffer_with_exists(buffers[i]);
-        if (exists && real_buff != 0) {
-            GLES.glDeleteBuffers(1, &real_buff);
-            CHECK_GL_ERROR
-        }
-    }
-}
-
-// ============================================================================
-// Buffer Object Lifecycle — State (validation + state management)
-// ============================================================================
-
-static void GenBuffers_State(GLsizei n, GLuint* buffers) {
-    if (n < 0) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glGenBuffers: n < 0"));
-        return;
-    }
-    if (!buffers) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glGenBuffers: buffers is null"));
-        return;
-    }
-    for (int i = 0; i < n; ++i) {
-        buffers[i] = gen_buffer();
-    }
-    GenBuffers_Backend(n, buffers);
-}
-
-static void DeleteBuffers_State(GLsizei n, const GLuint* buffers) {
-    if (n < 0) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glDeleteBuffers: n < 0"));
-        return;
-    }
-    if (!buffers) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glDeleteBuffers: buffers is null"));
-        return;
-    }
-    DeleteBuffers_Backend(n, buffers);
-    for (int i = 0; i < n; ++i) {
-        remove_buffer(buffers[i]);
-    }
-}
-
-// ============================================================================
-// Buffer Object Lifecycle — Public Wrappers
+// Buffer Object Lifecycle (ES 3.2 native)
 // ============================================================================
 
 void glGenBuffers(GLsizei n, GLuint* buffers) {
     LOG()
     LOG_D("glGenBuffers(%i, %p)", n, buffers)
-    GLState.Lock();
-    GenBuffers_State(n, buffers);
-    GLState.Unlock();
+    for (int i = 0; i < n; ++i) {
+        buffers[i] = gen_buffer();
+    }
 }
 
 void glDeleteBuffers(GLsizei n, const GLuint* buffers) {
     LOG()
     LOG_D("glDeleteBuffers(%i, %p)", n, buffers)
-    GLState.Lock();
-    DeleteBuffers_State(n, buffers);
-    GLState.Unlock();
+    for (int i = 0; i < n; ++i) {
+        auto [real_buff, exists] = find_real_buffer_with_exists(buffers[i]);
+        if (exists) {
+            GLES.glDeleteBuffers(1, &real_buff);
+            CHECK_GL_ERROR
+        }
+        remove_buffer(buffers[i]);
+    }
 }
 
 GLboolean glIsBuffer(GLuint buffer) {
     LOG()
     LOG_D("glIsBuffer, buffer = %d", buffer)
-    GLState.Lock();
-    GLboolean result = has_buffer(buffer);
-    GLState.Unlock();
-    return result;
+    return has_buffer(buffer);
 }
 
 // ============================================================================
-// Buffer Binding — Backend
+// Buffer Binding (ES 3.2 native, with buffer map)
 // ============================================================================
 
-static void BindBuffer_Backend(GLenum target, GLuint buffer) {
+void glBindBuffer(GLenum target, GLuint buffer) {
+    LOG()
+    LOG_D("glBindBuffer, target = %s, buffer = %d", glEnumToString(target), buffer)
+    set_bound_buffer_by_target(target, buffer);
+    // save ibo binding to vao
+    if (target == GL_ELEMENT_ARRAY_BUFFER) {
+        update_vao_ibo_binding(find_bound_array(), buffer);
+    }
+
     if (buffer == 0) [[unlikely]] {
-        GLES.glBindBuffer(target, 0);
+        GLES.glBindBuffer(target, buffer);
         CHECK_GL_ERROR
         return;
     }
@@ -430,118 +361,33 @@ static void BindBuffer_Backend(GLenum target, GLuint buffer) {
 }
 
 // ============================================================================
-// Buffer Binding — State
-// ============================================================================
-
-static void BindBuffer_State(GLenum target, GLuint buffer) {
-    if (!is_valid_buffer_target(target)) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glBindBuffer: invalid target"));
-        return;
-    }
-    // Update CPU-side binding state
-    GLState.buffer.boundBuffer[target] = buffer;
-    // Save IBO binding to VAO
-    if (target == GL_ELEMENT_ARRAY_BUFFER) {
-        update_vao_ibo_binding(GLState.vertexArray.currentVAO, buffer);
-    }
-    BindBuffer_Backend(target, buffer);
-}
-
-// ============================================================================
-// Buffer Binding — Public
-// ============================================================================
-
-void glBindBuffer(GLenum target, GLuint buffer) {
-    LOG()
-    LOG_D("glBindBuffer, target = %s, buffer = %d", glEnumToString(target), buffer)
-    GLState.Lock();
-    BindBuffer_State(target, buffer);
-    GLState.Unlock();
-}
-
-// ============================================================================
-// Buffer Data Upload — Backend (ES 3.2 native)
-// ============================================================================
-
-static void BufferData_Backend(GLenum target, GLsizeiptr size, const void* data, GLenum usage) {
-    GLES.glBufferData(target, size, data, usage);
-    CHECK_GL_ERROR
-}
-
-static void BufferSubData_Backend(GLenum target, GLintptr offset, GLsizeiptr size, const void* data) {
-    GLES.glBufferSubData(target, offset, size, data);
-    CHECK_GL_ERROR
-}
-
-// ============================================================================
-// Buffer Data Upload — State
-// ============================================================================
-
-static void BufferData_State(GLenum target, GLsizeiptr size, const void* data, GLenum usage) {
-    if (!is_valid_buffer_target(target)) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glBufferData: invalid target"));
-        return;
-    }
-    if (size < 0) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glBufferData: size < 0"));
-        return;
-    }
-    // Update buffer info in state
-    GLuint boundBuffer = GLState.buffer.boundBuffer[target];
-    if (boundBuffer != 0) {
-        set_buffer_data_size(boundBuffer, (size_t)size);
-    }
-    BufferData_Backend(target, size, data, usage);
-}
-
-static void BufferSubData_State(GLenum target, GLintptr offset, GLsizeiptr size, const void* data) {
-    if (!is_valid_buffer_target(target)) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glBufferSubData: invalid target"));
-        return;
-    }
-    if (offset < 0) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glBufferSubData: offset < 0"));
-        return;
-    }
-    if (size < 0) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glBufferSubData: size < 0"));
-        return;
-    }
-    BufferSubData_Backend(target, offset, size, data);
-}
-
-// ============================================================================
-// Buffer Data Upload — Public
+// Buffer Data Upload (ES 3.2 native, with buffer map)
 // ============================================================================
 
 void glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage) {
     LOG()
     LOG_D("glBufferData, target = %s, size = %d, data = 0x%x, usage = %s", glEnumToString(target), size, data,
           glEnumToString(usage))
-    GLState.Lock();
-    BufferData_State(target, size, data, usage);
-    GLState.Unlock();
+    GLES.glBufferData(target, size, data, usage);
+    int idx = binding_target_to_index(target);
+    if (idx >= 0) set_buffer_data_size(g_bound_buffers_arr[idx], size);
+    CHECK_GL_ERROR
 }
 
 void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void* data) {
     LOG()
     LOG_D("glBufferSubData, target = %s, offset = %d, size = %d, data = %p", glEnumToString(target), offset, size, data)
-    GLState.Lock();
-    BufferSubData_State(target, offset, size, data);
-    GLState.Unlock();
+    GLES.glBufferSubData(target, offset, size, data);
+    CHECK_GL_ERROR
 }
 
 // ============================================================================
-// Buffer Mapping — Backend (ES 3.2 native)
+// Buffer Mapping (ES 3.2 native)
 // ============================================================================
 
-static void* MapBuffer_Backend(GLenum target, GLenum access) {
+void* glMapBuffer(GLenum target, GLenum access) {
+    LOG()
+    LOG_D("glMapBuffer, target = %s, access = %s", glEnumToString(target), glEnumToString(access))
     if (g_gles_caps.GL_OES_mapbuffer) {
         return GLES.glMapBufferOES(target, access);
     }
@@ -557,124 +403,63 @@ static void* MapBuffer_Backend(GLenum target, GLenum access) {
     case GL_READ_WRITE: flags = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT;            break;
     default:            return nullptr;
     }
-    return GLES.glMapBufferRange(target, 0, (GLsizeiptr)buffer_size, flags);
-}
-
-static void* MapBufferRange_Backend(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access) {
-    if (global_settings.buffer_coherent_as_flush) access &= ~GL_MAP_FLUSH_EXPLICIT_BIT;
-    return GLES.glMapBufferRange(target, offset, length, access);
-}
-
-static GLboolean UnmapBuffer_Backend(GLenum target) {
-    if (g_gles_caps.GL_OES_mapbuffer) return GLES.glUnmapBuffer(target);
-    GLboolean result = GLES.glUnmapBuffer(target);
-    CHECK_GL_ERROR
-    return result;
-}
-
-static void FlushMappedBufferRange_Backend(GLenum target, GLintptr offset, GLsizeiptr length) {
-    if (!global_settings.buffer_coherent_as_flush) GLES.glFlushMappedBufferRange(target, offset, length);
-}
-
-// ============================================================================
-// Buffer Mapping — State
-// ============================================================================
-
-static void* MapBuffer_State(GLenum target, GLenum access) {
-    if (!is_valid_buffer_target(target)) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glMapBuffer: invalid target"));
-        return nullptr;
-    }
-    if (access != GL_READ_ONLY && access != GL_WRITE_ONLY && access != GL_READ_WRITE) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glMapBuffer: invalid access"));
-        return nullptr;
-    }
-    return MapBuffer_Backend(target, access);
-}
-
-static void* MapBufferRange_State(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access) {
-    if (!is_valid_buffer_target(target)) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glMapBufferRange: invalid target"));
-        return nullptr;
-    }
-    if (offset < 0) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glMapBufferRange: offset < 0"));
-        return nullptr;
-    }
-    if (length <= 0) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glMapBufferRange: length <= 0"));
-        return nullptr;
-    }
-    return MapBufferRange_Backend(target, offset, length, access);
-}
-
-static GLboolean UnmapBuffer_State(GLenum target) {
-    if (!is_valid_buffer_target(target)) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glUnmapBuffer: invalid target"));
-        return GL_FALSE;
-    }
-    return UnmapBuffer_Backend(target);
-}
-
-static void FlushMappedBufferRange_State(GLenum target, GLintptr offset, GLsizeiptr length) {
-    if (!is_valid_buffer_target(target)) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glFlushMappedBufferRange: invalid target"));
-        return;
-    }
-    FlushMappedBufferRange_Backend(target, offset, length);
-}
-
-// ============================================================================
-// Buffer Mapping — Public
-// ============================================================================
-
-void* glMapBuffer(GLenum target, GLenum access) {
-    LOG()
-    LOG_D("glMapBuffer, target = %s, access = %s", glEnumToString(target), glEnumToString(access))
-    GLState.Lock();
-    void* result = MapBuffer_State(target, access);
-    GLState.Unlock();
-    return result;
+    void* ptr = glMapBufferRange(target, 0, buffer_size, flags);
+    return ptr;
 }
 
 void* glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access) {
     LOG()
-    GLState.Lock();
-    void* result = MapBufferRange_State(target, offset, length, access);
-    GLState.Unlock();
-    return result;
+    if (global_settings.buffer_coherent_as_flush) access &= ~GL_MAP_FLUSH_EXPLICIT_BIT;
+    return GLES.glMapBufferRange(target, offset, length, access);
 }
 
 GLboolean glUnmapBuffer(GLenum target) {
     LOG()
     LOG_D("%s(%s)", __func__, glEnumToString(target));
-    GLState.Lock();
-    GLboolean result = UnmapBuffer_State(target);
-    GLState.Unlock();
+    if (g_gles_caps.GL_OES_mapbuffer) return GLES.glUnmapBuffer(target);
+
+    GLboolean result = GLES.glUnmapBuffer(target);
+    CHECK_GL_ERROR
     return result;
 }
 
 void glFlushMappedBufferRange(GLenum target, GLintptr offset, GLsizeiptr length) {
     LOG()
-    GLState.Lock();
-    FlushMappedBufferRange_State(target, offset, length);
-    GLState.Unlock();
+    if (!global_settings.buffer_coherent_as_flush) GLES.glFlushMappedBufferRange(target, offset, length);
 }
 
 // ============================================================================
-// Buffer Range / Base Binding — Backend
+// Buffer Range / Base Binding (ES 3.2 native, with buffer map)
 // ============================================================================
 
-static void BindBufferRange_Backend(GLenum target, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size) {
+struct atomic_buffer {
+    GLuint id;
+    GLsizeiptr size;
+    GLintptr offset;
+};
+
+static std::vector<atomic_buffer> g_buffer_map_atomic_buffer_info;
+static std::vector<GLuint> g_buffer_map_ssbo_id;
+
+void bindAllAtomicCounterAsSSBO() {
+    const size_t count = g_buffer_map_atomic_buffer_info.size();
+    for (size_t i = 0; i < count; ++i) {
+        atomic_buffer buf = g_buffer_map_atomic_buffer_info[i];
+        if (buf.id != 0) {
+            GLuint realID = find_real_buffer(buf.id);
+            GLES.glBindBufferRange(GL_SHADER_STORAGE_BUFFER, i, realID, buf.offset, buf.size);
+            LOG_D("Bound atomic counter buffer %u(real: %u) as SSBO at index %zu", buf, realID, i);
+        }
+    }
+}
+
+void glBindBufferRange(GLenum target, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size) {
+    LOG()
+    LOG_D("glBindBufferRange, target = %s, index = %d, buffer = %d, offset = %p, size = %zi", glEnumToString(target),
+          index, buffer, (void*)offset, size)
+
     if (buffer == 0) {
-        GLES.glBindBufferRange(target, index, 0, offset, size);
+        GLES.glBindBufferRange(target, index, buffer, offset, size);
         CHECK_GL_ERROR
         return;
     }
@@ -690,12 +475,21 @@ static void BindBufferRange_Backend(GLenum target, GLuint index, GLuint buffer, 
         CHECK_GL_ERROR
     }
     GLES.glBindBufferRange(target, index, real_buffer, offset, size);
+    if (target == GL_ATOMIC_COUNTER_BUFFER) {
+        if (g_buffer_map_atomic_buffer_info.empty()) {
+            g_buffer_map_atomic_buffer_info.resize(GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS, {});
+        }
+        g_buffer_map_atomic_buffer_info[index] = {buffer, size, offset};
+    }
     CHECK_GL_ERROR
 }
 
-static void BindBufferBase_Backend(GLenum target, GLuint index, GLuint buffer) {
+void glBindBufferBase(GLenum target, GLuint index, GLuint buffer) {
+    LOG()
+    LOG_D("glBindBufferBase, target = %s, index = %d, buffer = %d", glEnumToString(target), index, buffer)
+
     if (buffer == 0) {
-        GLES.glBindBufferBase(target, index, 0);
+        GLES.glBindBufferBase(target, index, buffer);
         CHECK_GL_ERROR
         return;
     }
@@ -711,75 +505,25 @@ static void BindBufferBase_Backend(GLenum target, GLuint index, GLuint buffer) {
         CHECK_GL_ERROR
     }
     GLES.glBindBufferBase(target, index, real_buffer);
-    CHECK_GL_ERROR
-}
-
-// ============================================================================
-// Buffer Range / Base Binding — State
-// ============================================================================
-
-static void BindBufferRange_State(GLenum target, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size) {
-    if (!is_valid_buffer_target(target) && target != GL_ATOMIC_COUNTER_BUFFER) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glBindBufferRange: invalid target"));
-        return;
-    }
-    // Atomic counter buffer emulation
-    if (target == GL_ATOMIC_COUNTER_BUFFER) {
-        if (g_buffer_map_atomic_buffer_info.empty()) {
-            g_buffer_map_atomic_buffer_info.resize(GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS, {});
-        }
-        g_buffer_map_atomic_buffer_info[index] = {buffer, size, offset};
-    }
-    BindBufferRange_Backend(target, index, buffer, offset, size);
-}
-
-static void BindBufferBase_State(GLenum target, GLuint index, GLuint buffer) {
-    if (!is_valid_buffer_target(target) && target != GL_ATOMIC_COUNTER_BUFFER) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glBindBufferBase: invalid target"));
-        return;
-    }
-    // Track SSBO bindings
     if (target == GL_SHADER_STORAGE_BUFFER) {
         if (g_buffer_map_ssbo_id.empty()) {
             g_buffer_map_ssbo_id.resize(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS, 0);
         }
-        if (index < (GLuint)g_buffer_map_ssbo_id.size()) {
-            g_buffer_map_ssbo_id[index] = buffer;
-        }
+        g_buffer_map_ssbo_id[index] = buffer;
     }
-    BindBufferBase_Backend(target, index, buffer);
+    CHECK_GL_ERROR
 }
 
 // ============================================================================
-// Buffer Range / Base Binding — Public
+// Vertex Buffer Binding (ES 3.2 native, with buffer map)
 // ============================================================================
 
-void glBindBufferRange(GLenum target, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size) {
+void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) {
     LOG()
-    LOG_D("glBindBufferRange, target = %s, index = %d, buffer = %d, offset = %p, size = %zi", glEnumToString(target),
-          index, buffer, (void*)offset, size)
-    GLState.Lock();
-    BindBufferRange_State(target, index, buffer, offset, size);
-    GLState.Unlock();
-}
-
-void glBindBufferBase(GLenum target, GLuint index, GLuint buffer) {
-    LOG()
-    LOG_D("glBindBufferBase, target = %s, index = %d, buffer = %d", glEnumToString(target), index, buffer)
-    GLState.Lock();
-    BindBufferBase_State(target, index, buffer);
-    GLState.Unlock();
-}
-
-// ============================================================================
-// Vertex Buffer Binding — Backend
-// ============================================================================
-
-static void BindVertexBuffer_Backend(GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) {
+    LOG_D("glBindVertexBuffer, bindingindex = %d, buffer = %d, offset = %p, stride = %i", bindingindex, buffer, offset,
+          stride)
     if (buffer == 0) [[unlikely]] {
-        GLES.glBindVertexBuffer(bindingindex, 0, offset, stride);
+        GLES.glBindVertexBuffer(bindingindex, buffer, offset, stride);
         CHECK_GL_ERROR
         return;
     }
@@ -799,166 +543,48 @@ static void BindVertexBuffer_Backend(GLuint bindingindex, GLuint buffer, GLintpt
 }
 
 // ============================================================================
-// Vertex Buffer Binding — State
-// ============================================================================
-
-static void BindVertexBuffer_State(GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) {
-    BindVertexBuffer_Backend(bindingindex, buffer, offset, stride);
-}
-
-// ============================================================================
-// Vertex Buffer Binding — Public
-// ============================================================================
-
-void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) {
-    LOG()
-    LOG_D("glBindVertexBuffer, bindingindex = %d, buffer = %d, offset = %p, stride = %i", bindingindex, buffer, offset,
-          stride)
-    GLState.Lock();
-    BindVertexBuffer_State(bindingindex, buffer, offset, stride);
-    GLState.Unlock();
-}
-
-// ============================================================================
-// Buffer Copy — Backend (ES 3.2 native)
-// ============================================================================
-
-static void CopyBufferSubData_Backend(GLenum readTarget, GLenum writeTarget, GLintptr readOffset, GLintptr writeOffset,
-                                      GLsizeiptr size) {
-    GLES.glCopyBufferSubData(readTarget, writeTarget, readOffset, writeOffset, size);
-    CHECK_GL_ERROR
-}
-
-// ============================================================================
-// Buffer Copy — State
-// ============================================================================
-
-static void CopyBufferSubData_State(GLenum readTarget, GLenum writeTarget, GLintptr readOffset, GLintptr writeOffset,
-                                    GLsizeiptr size) {
-    if (!is_valid_buffer_target(readTarget)) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glCopyBufferSubData: invalid readTarget"));
-        return;
-    }
-    if (!is_valid_buffer_target(writeTarget)) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glCopyBufferSubData: invalid writeTarget"));
-        return;
-    }
-    CopyBufferSubData_Backend(readTarget, writeTarget, readOffset, writeOffset, size);
-}
-
-// ============================================================================
-// Buffer Copy — Public
+// Buffer Copy (ES 3.2 native)
 // ============================================================================
 
 void glCopyBufferSubData(GLenum readTarget, GLenum writeTarget, GLintptr readOffset, GLintptr writeOffset, GLsizeiptr size) {
     LOG()
     LOG_D("glCopyBufferSubData, readTarget = %s, writeTarget = %s, readOffset = %d, writeOffset = %d, size = %d",
           glEnumToString(readTarget), glEnumToString(writeTarget), readOffset, writeOffset, size)
-    GLState.Lock();
-    CopyBufferSubData_State(readTarget, writeTarget, readOffset, writeOffset, size);
-    GLState.Unlock();
-}
-
-// ============================================================================
-// Buffer Parameter Queries — Backend (ES 3.2 native)
-// ============================================================================
-
-static void GetBufferParameteriv_Backend(GLenum target, GLenum pname, GLint* params) {
-    GLES.glGetBufferParameteriv(target, pname, params);
-    CHECK_GL_ERROR
-}
-
-static void GetBufferParameteri64v_Backend(GLenum target, GLenum pname, GLint64* params) {
-    GLES.glGetBufferParameteri64v(target, pname, params);
-    CHECK_GL_ERROR
-}
-
-static void GetBufferPointerv_Backend(GLenum target, GLenum pname, void** params) {
-    GLES.glGetBufferPointerv(target, pname, params);
+    GLES.glCopyBufferSubData(readTarget, writeTarget, readOffset, writeOffset, size);
     CHECK_GL_ERROR
 }
 
 // ============================================================================
-// Buffer Parameter Queries — State
-// ============================================================================
-
-static void GetBufferParameteriv_State(GLenum target, GLenum pname, GLint* params) {
-    if (!is_valid_buffer_target(target)) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glGetBufferParameteriv: invalid target"));
-        return;
-    }
-    if (!params) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glGetBufferParameteriv: params is null"));
-        return;
-    }
-    GetBufferParameteriv_Backend(target, pname, params);
-}
-
-static void GetBufferParameteri64v_State(GLenum target, GLenum pname, GLint64* params) {
-    if (!is_valid_buffer_target(target)) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glGetBufferParameteri64v: invalid target"));
-        return;
-    }
-    if (!params) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glGetBufferParameteri64v: params is null"));
-        return;
-    }
-    GetBufferParameteri64v_Backend(target, pname, params);
-}
-
-static void GetBufferPointerv_State(GLenum target, GLenum pname, void** params) {
-    if (!is_valid_buffer_target(target)) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glGetBufferPointerv: invalid target"));
-        return;
-    }
-    if (!params) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glGetBufferPointerv: params is null"));
-        return;
-    }
-    GetBufferPointerv_Backend(target, pname, params);
-}
-
-// ============================================================================
-// Buffer Parameter Queries — Public
+// Buffer Parameter Queries (ES 3.2 native)
 // ============================================================================
 
 void glGetBufferParameteriv(GLenum target, GLenum pname, GLint* params) {
     LOG()
     LOG_D("glGetBufferParameteriv, target = %s, pname = %s", glEnumToString(target), glEnumToString(pname))
-    GLState.Lock();
-    GetBufferParameteriv_State(target, pname, params);
-    GLState.Unlock();
+    GLES.glGetBufferParameteriv(target, pname, params);
+    CHECK_GL_ERROR
 }
 
 void glGetBufferParameteri64v(GLenum target, GLenum pname, GLint64* params) {
     LOG()
     LOG_D("glGetBufferParameteri64v, target = %s, pname = %s", glEnumToString(target), glEnumToString(pname))
-    GLState.Lock();
-    GetBufferParameteri64v_State(target, pname, params);
-    GLState.Unlock();
+    GLES.glGetBufferParameteri64v(target, pname, params);
+    CHECK_GL_ERROR
 }
 
 void glGetBufferPointerv(GLenum target, GLenum pname, void** params) {
     LOG()
     LOG_D("glGetBufferPointerv, target = %s, pname = %s", glEnumToString(target), glEnumToString(pname))
-    GLState.Lock();
-    GetBufferPointerv_State(target, pname, params);
-    GLState.Unlock();
+    GLES.glGetBufferPointerv(target, pname, params);
+    CHECK_GL_ERROR
 }
 
 // ============================================================================
-// Buffer Storage — Backend (ES 3.2 native via EXT)
+// Buffer Storage (ES 3.2 native via EXT)
 // ============================================================================
 
-static void BufferStorage_Backend(GLenum target, GLsizeiptr size, const void* data, GLbitfield flags) {
+void glBufferStorage(GLenum target, GLsizeiptr size, const void* data, GLbitfield flags) {
+    LOG()
     if (GLES.glBufferStorageEXT) {
         if (global_settings.buffer_coherent_as_flush &&
             ((flags & GL_MAP_PERSISTENT_BIT) != 0 || (flags & GL_DYNAMIC_STORAGE_BIT) != 0))
@@ -969,41 +595,16 @@ static void BufferStorage_Backend(GLenum target, GLsizeiptr size, const void* da
 }
 
 // ============================================================================
-// Buffer Storage — State
+// Texture Buffer Objects (ES 3.2 native)
 // ============================================================================
-
-static void BufferStorage_State(GLenum target, GLsizeiptr size, const void* data, GLbitfield flags) {
-    if (!is_valid_buffer_target(target)) {
-        GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-            std::make_unique<GenericErrorInfo>("glBufferStorage: invalid target"));
-        return;
-    }
-    if (size <= 0) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glBufferStorage: size <= 0"));
-        return;
-    }
-    // Update buffer info in state
-    GLuint boundBuffer = GLState.buffer.boundBuffer[target];
-    if (boundBuffer != 0) {
-        set_buffer_data_size(boundBuffer, (size_t)size);
-    }
-    BufferStorage_Backend(target, size, data, flags);
-}
-
-// ============================================================================
-// Buffer Storage — Public
-// ============================================================================
-
-void glBufferStorage(GLenum target, GLsizeiptr size, const void* data, GLbitfield flags) {
-    LOG()
-    GLState.Lock();
-    BufferStorage_State(target, size, data, flags);
-    GLState.Unlock();
-}
-
-// ============================================================================
-// Texture Buffer Objects — TBO availability check
+//
+// TBO attaches a buffer object's data store to a texture buffer target.
+// Virtual buffer IDs are resolved to real GPU buffer IDs via the buffer map.
+// On ES 3.2, glTexBuffer/glTexBufferRange are natively supported.
+//
+// Safety: runtime function-pointer check — if the driver does not expose
+// glTexBuffer (e.g. incomplete ES 3.2 implementation), we log an error
+// and return gracefully rather than crashing.
 // ============================================================================
 
 // Checked once at first call; static const avoids per-call branch overhead.
@@ -1018,7 +619,9 @@ static bool tbo_available() {
     return avail;
 }
 
-// Resolve virtual buffer → real GPU buffer in a single lookup.
+// Resolve virtual buffer → real GPU buffer in a single lookup (avoids separate
+// has_buffer + find_real_buffer calls). Returns the real buffer, allocating one
+// on-demand if the virtual buffer is tracked but not yet backed by a GPU object.
 static inline GLuint resolve_tbo_buffer(GLuint buffer) {
     if (buffer == 0) return 0;
     auto [rb, exists] = find_real_buffer_with_exists(buffer);
@@ -1031,71 +634,45 @@ static inline GLuint resolve_tbo_buffer(GLuint buffer) {
     return new_rb;
 }
 
-// ============================================================================
-// Texture Buffer Objects — Backend
-// ============================================================================
-
-static void TexBuffer_Backend(GLenum target, GLenum internalformat, GLuint real_buffer) {
-    GLES.glTexBuffer(target, internalformat, real_buffer);
-    CHECK_GL_ERROR
-}
-
-static void TexBufferRange_Backend(GLenum target, GLenum internalformat, GLuint real_buffer, GLintptr offset,
-                                   GLsizeiptr size) {
-    GLES.glTexBufferRange(target, internalformat, real_buffer, offset, size);
-    CHECK_GL_ERROR
-}
-
-// ============================================================================
-// Texture Buffer Objects — State
-// ============================================================================
-
-static void TexBuffer_State(GLenum target, GLenum internalformat, GLuint buffer) {
-    if (target != GL_TEXTURE_BUFFER) return;
-    if (!tbo_available()) [[unlikely]] return;
-    GLuint real_buffer = resolve_tbo_buffer(buffer);
-    TexBuffer_Backend(target, internalformat, real_buffer);
-}
-
-static void TexBufferRange_State(GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size) {
-    if (target != GL_TEXTURE_BUFFER) return;
-    if (!tbo_available()) [[unlikely]] return;
-    GLuint real_buffer = resolve_tbo_buffer(buffer);
-    TexBufferRange_Backend(target, internalformat, real_buffer, offset, size);
-}
-
-// ============================================================================
-// Texture Buffer Objects — Public
-// ============================================================================
-
 void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer) {
     LOG()
     LOG_D("glTexBuffer, target = %s, internalformat = %s, buffer = %d", glEnumToString(target),
           glEnumToString(internalformat), buffer)
-    GLState.Lock();
-    TexBuffer_State(target, internalformat, buffer);
-    GLState.Unlock();
+    if (target != GL_TEXTURE_BUFFER) return;
+    if (!tbo_available()) [[unlikely]] return;
+
+    GLuint real_buffer = resolve_tbo_buffer(buffer);
+    GLES.glTexBuffer(target, internalformat, real_buffer);
+    CHECK_GL_ERROR
 }
 
 void glTexBufferRange(GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size) {
     LOG()
     LOG_D("glTexBufferRange, target = %s, internalformat = %s, buffer = %d, offset = %p, size = %zi",
           glEnumToString(target), glEnumToString(internalformat), buffer, (void*)offset, size)
-    GLState.Lock();
-    TexBufferRange_State(target, internalformat, buffer, offset, size);
-    GLState.Unlock();
+    if (target != GL_TEXTURE_BUFFER) return;
+    if (!tbo_available()) [[unlikely]] return;
+
+    GLuint real_buffer = resolve_tbo_buffer(buffer);
+    GLES.glTexBufferRange(target, internalformat, real_buffer, offset, size);
+    CHECK_GL_ERROR
 }
 
 // ============================================================================
-// Vertex Array Object Lifecycle — Backend
+// Vertex Array Object Lifecycle (ES 3.2 native, with VAO map)
 // ============================================================================
 
-static void GenVertexArrays_Backend(GLsizei n, GLuint* /*arrays*/) {
-    // No GLES call needed; real VAOs are lazily created on first bind
-    (void)n;
+void glGenVertexArrays(GLsizei n, GLuint* arrays) {
+    LOG()
+    LOG_D("glGenVertexArrays(%i, %p)", n, arrays)
+    for (int i = 0; i < n; ++i) {
+        arrays[i] = gen_array();
+    }
 }
 
-static void DeleteVertexArrays_Backend(GLsizei n, const GLuint* arrays) {
+void glDeleteVertexArrays(GLsizei n, const GLuint* arrays) {
+    LOG()
+    LOG_D("glDeleteVertexArrays(%i, %p)", n, arrays)
     for (int i = 0; i < n; ++i) {
         if (has_array(arrays[i]) && arrays[i] != 0) {
             GLuint real_array = find_real_array(arrays[i]);
@@ -1104,10 +681,25 @@ static void DeleteVertexArrays_Backend(GLsizei n, const GLuint* arrays) {
                 CHECK_GL_ERROR
             }
         }
+        remove_array(arrays[i]);
     }
 }
 
-static void BindVertexArray_Backend(GLuint array) {
+GLboolean glIsVertexArray(GLuint array) {
+    LOG()
+    LOG_D("glIsVertexArray(%d)", array)
+    return has_array(array);
+}
+
+void glBindVertexArray(GLuint array) {
+    LOG()
+    LOG_D("glBindVertexArray(%d)", array)
+
+    bound_array = array;
+
+    // update bound ibo
+    set_bound_buffer_by_target(GL_ELEMENT_ARRAY_BUFFER, get_ibo_by_vao(array));
+
     if (!has_array(array) || array == 0) [[unlikely]] {
         LOG_D("Does not have va=%d found!", array)
         GLES.glBindVertexArray(array);
@@ -1125,89 +717,6 @@ static void BindVertexArray_Backend(GLuint array) {
     LOG_D("glBindVertexArray: %d -> %d", array, real_array)
     GLES.glBindVertexArray(real_array);
     CHECK_GL_ERROR
-}
-
-// ============================================================================
-// Vertex Array Object Lifecycle — State
-// ============================================================================
-
-static void GenVertexArrays_State(GLsizei n, GLuint* arrays) {
-    if (n < 0) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glGenVertexArrays: n < 0"));
-        return;
-    }
-    if (!arrays) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glGenVertexArrays: arrays is null"));
-        return;
-    }
-    for (int i = 0; i < n; ++i) {
-        arrays[i] = gen_array();
-    }
-    GenVertexArrays_Backend(n, arrays);
-}
-
-static void DeleteVertexArrays_State(GLsizei n, const GLuint* arrays) {
-    if (n < 0) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glDeleteVertexArrays: n < 0"));
-        return;
-    }
-    if (!arrays) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glDeleteVertexArrays: arrays is null"));
-        return;
-    }
-    DeleteVertexArrays_Backend(n, arrays);
-    for (int i = 0; i < n; ++i) {
-        remove_array(arrays[i]);
-    }
-}
-
-static void BindVertexArray_State(GLuint array) {
-    // Update CPU-side VAO tracking
-    GLState.vertexArray.currentVAO = array;
-    // Update bound IBO from VAO's stored IBO
-    GLState.buffer.boundBuffer[GL_ELEMENT_ARRAY_BUFFER] = get_ibo_by_vao(array);
-    BindVertexArray_Backend(array);
-}
-
-// ============================================================================
-// Vertex Array Object Lifecycle — Public
-// ============================================================================
-
-void glGenVertexArrays(GLsizei n, GLuint* arrays) {
-    LOG()
-    LOG_D("glGenVertexArrays(%i, %p)", n, arrays)
-    GLState.Lock();
-    GenVertexArrays_State(n, arrays);
-    GLState.Unlock();
-}
-
-void glDeleteVertexArrays(GLsizei n, const GLuint* arrays) {
-    LOG()
-    LOG_D("glDeleteVertexArrays(%i, %p)", n, arrays)
-    GLState.Lock();
-    DeleteVertexArrays_State(n, arrays);
-    GLState.Unlock();
-}
-
-GLboolean glIsVertexArray(GLuint array) {
-    LOG()
-    LOG_D("glIsVertexArray(%d)", array)
-    GLState.Lock();
-    GLboolean result = has_array(array);
-    GLState.Unlock();
-    return result;
-}
-
-void glBindVertexArray(GLuint array) {
-    LOG()
-    LOG_D("glBindVertexArray(%d)", array)
-    GLState.Lock();
-    BindVertexArray_State(array);
-    GLState.Unlock();
 }
 
 // ============================================================================

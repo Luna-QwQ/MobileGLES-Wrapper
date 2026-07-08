@@ -25,9 +25,6 @@
 //   2. glShaderSource(shader, source) → if ESSL 100/300/310/320: native pass-through
 //                                       otherwise: GLSL→ESSL (version 320) conversion
 //   3. glCompileShader(shader)        → native GLES 3.2 pass-through
-//
-// Architecture: DirectGLES pattern
-//   Public function → _State (validate + state) → _Backend (actual GLES call)
 // ============================================================================
 
 #include "shader.h"
@@ -41,11 +38,6 @@
 #include <vector>
 
 #define DEBUG 0
-
-// ============================================================================
-// Global shader info (preserved for backward compatibility)
-// ============================================================================
-struct shader_t shaderInfo = {};
 
 // ============================================================================
 // Shader type cache: avoids glGetShaderiv GPU round-trip on every glShaderSource
@@ -203,239 +195,52 @@ static GLenum detect_shader_type_from_source(const ShaderSourceInfo& info) {
 }
 
 // ============================================================================
-// Section: glCreateShader - Shader Object Creation (DirectGLES pattern)
+// Section: Native ES 3.2 Pass-Through Functions
+//
+// These functions are natively supported by OpenGL ES 3.2 and are passed
+// through directly to the underlying GLES implementation without any
+// CPU-side conversion or emulation.
 // ============================================================================
 
 // ---------------------------------------------------------------------------
-// CreateShader_Backend - Actual GLES call to create the shader object
+// glCreateShader - Creates a shader object of the given type (native ES 3.2)
+// ES 3.2 natively supports: VERTEX_SHADER, FRAGMENT_SHADER, COMPUTE_SHADER
+// Also caches the shader type to avoid glGetShaderiv GPU round-trip later.
 // ---------------------------------------------------------------------------
-static GLuint CreateShader_Backend(GLenum type) {
-    return GLES.glCreateShader(type);
-}
+GLuint glCreateShader(GLenum type) {
+    GLuint shader = GLES.glCreateShader(type);
+    if (shader != 0) {
+        auto& cacheEntry = get_shader_cache(shader);
+        cacheEntry.type = type;
 
-// ---------------------------------------------------------------------------
-// CreateShader_State - Validates shader type, creates real GLES shader,
-//                      stores mapping in GLState, returns virtual ID.
-// ---------------------------------------------------------------------------
-static GLuint CreateShader_State(GLenum type) {
-    // Step 1: Validate shader type
-    // ES 3.2 natively supports: VERTEX_SHADER, FRAGMENT_SHADER, COMPUTE_SHADER
-    // Desktop-only types (GEOMETRY, TESS_*) are rejected with InvalidEnum
-    switch (type) {
-        case GL_VERTEX_SHADER:
-        case GL_FRAGMENT_SHADER:
-        case GL_COMPUTE_SHADER:
-            break; // valid ES 3.2 shader types
-        case GL_GEOMETRY_SHADER:
-        case GL_TESS_CONTROL_SHADER:
-        case GL_TESS_EVALUATION_SHADER:
-            GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-                std::make_unique<GenericErrorInfo>("glCreateShader: geometry/tessellation shaders are not supported in OpenGL ES 3.2"));
-            return 0;
-        default:
-            GLState.errorState.RecordError(ErrorCode::InvalidEnum,
-                std::make_unique<GenericErrorInfo>("glCreateShader: invalid shader type"));
-            return 0;
+        // Track in unified state manager
+        auto &ss = GLState.shader;
+        ss.shaderMap[shader] = shader;
+        ss.shaderMapReverse[shader] = shader;
+        auto &info = ss.shaderInfo[shader];
+        info.type = type;
     }
-
-    // Step 2: Create the real GLES shader
-    GLuint shader = CreateShader_Backend(type);
-    if (shader == 0) {
-        GLState.errorState.RecordError(ErrorCode::OutOfMemory,
-            std::make_unique<GenericErrorInfo>("glCreateShader: failed to create shader object"));
-        return 0;
-    }
-
-    // Step 3: Cache the shader type to avoid glGetShaderiv GPU round-trip later
-    auto& cacheEntry = get_shader_cache(shader);
-    cacheEntry.type = type;
-
-    // Step 4: Track in unified state manager (1:1 virtual→real mapping)
-    auto &ss = GLState.shader;
-    ss.shaderMap[shader] = shader;
-    ss.shaderMapReverse[shader] = shader;
-    auto &info = ss.shaderInfo[shader];
-    info.type = type;
-    info.source.clear();
-    info.compiled = false;
-
     return shader;
 }
 
 // ---------------------------------------------------------------------------
-// glCreateShader - Public entry point (thin wrapper)
-// ---------------------------------------------------------------------------
-GLAPI GLAPIENTRY GLuint glCreateShader(GLenum type) {
-    LOG()
-    GLState.Lock();
-    GLuint result = CreateShader_State(type);
-    GLState.Unlock();
-    return result;
-}
-
-// ============================================================================
-// Section: glShaderSource - Shader Source Upload (DirectGLES pattern)
-//
-// glShaderSource is the entry point for shader source code. It implements
-// the CPU simulation layer for non-ES GLSL code by converting desktop GLSL
-// to GLSL ES 3.2 (version 320) using the GLSLtoGLSLES() conversion engine.
-//
-// Pipeline:
-//   1. If shader is already ESSL (100/300/310/320) → native pass-through
-//   2. If shader type is unknown → detect from source content
-//   3. Convert GLSL → GLSL ES 3.2 via GLSLtoGLSLES()
-//   4. On conversion failure → fall back to original source
-// ============================================================================
-
-// ---------------------------------------------------------------------------
-// ShaderSource_Backend - Actual GLES call to set shader source
-// ---------------------------------------------------------------------------
-static void ShaderSource_Backend(GLuint shader, GLsizei count, const GLchar* const* string, const GLint* length) {
-    GLES.glShaderSource(shader, count, string, length);
-}
-
-// ---------------------------------------------------------------------------
-// ShaderSource_State - Validates parameters, applies GLSL→ESSL conversion,
-//                      stores source in GLState, dispatches to backend.
-// ---------------------------------------------------------------------------
-static void ShaderSource_State(GLuint shader, GLsizei count, const GLchar* const* string, const GLint* length) {
-    LOG_D("glShaderSource hook, shader=%d, count=%d", shader, count)
-
-    // Step 1: Validate shader object exists
-    if (shader == 0) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glShaderSource: shader is 0"));
-        return;
-    }
-
-    // Step 2: Handle empty/null source
-    if (count <= 0 || !string || !string[0]) {
-        // Invalidate cache when clearing source
-        auto& entry = get_shader_cache(shader);
-        entry.is_essl_verified = false;
-        ShaderSource_Backend(shader, count, string, length);
-        return;
-    }
-
-    const char* raw_code = string[0];
-    auto& cacheEntry = get_shader_cache(shader);
-
-    // Step 3: Get shader type — use cache to avoid glGetShaderiv GPU round-trip
-    GLenum shaderType = cacheEntry.type;
-    if (shaderType == 0) [[unlikely]] {
-        // First call: query type from GLES and cache it
-        GLES.glGetShaderiv(shader, GL_SHADER_TYPE, (GLint*)&shaderType);
-        cacheEntry.type = shaderType;
-    }
-
-    // Step 4: Fast path — if previously verified as ESSL, skip scan and pass through
-    if (cacheEntry.is_essl_verified) [[likely]] {
-        LOG_D("Cached ESSL shader %d, passing through directly", shader)
-        ShaderSource_Backend(shader, count, string, length);
-        return;
-    }
-
-    // Step 5: Single-pass scan of source for version + shader type detection
-    ShaderSourceInfo sourceInfo = scanShaderSource(raw_code);
-
-    // Step 6: If shader type is GL_FRAGMENT_SHADER, check if source actually
-    // contains geometry/tessellation/compute shader keywords and correct the type.
-    if (shaderType == GL_FRAGMENT_SHADER) {
-        GLenum detected = detect_shader_type_from_source(sourceInfo);
-        if (detected != GL_FRAGMENT_SHADER) {
-            shaderType = detected;
-            cacheEntry.type = shaderType; // update cache with detected type
-            LOG_I("[MobileGLES] Detected non-fragment shader type from source: %d", shaderType)
-        }
-    }
-
-    LOG_D("glShaderSource: shaderType=%d", shaderType)
-
-    // Step 7: Check if already an ES-compatible shader → native pass-through
-    if (is_direct_shader(sourceInfo)) {
-        LOG_D("Direct ES shader (ESSL 100/300/310/320), passing through")
-        cacheEntry.is_essl_verified = true; // mark as verified ESSL for future calls
-        ShaderSource_Backend(shader, count, string, length);
-        return;
-    }
-
-    // Step 8: Convert desktop GLSL → GLSL ES 3.2 (version 320)
-    std::string glsl_code = raw_code;
-    uint essl_version = 320;
-    int return_code = -1;
-    std::string converted = GLSLtoGLSLES(glsl_code.c_str(), shaderType, essl_version, 0, return_code);
-
-    if (return_code < 0) {
-        // Conversion failed — fall back to original source
-        LOG_I("[MobileGLES] GLSL conversion failed for shader %d (type=%d), passing through original desktop GLSL (will likely fail to compile on GLES)", shader, shaderType)
-        ShaderSource_Backend(shader, count, string, length);
-        return;
-    }
-
-    LOG_D("Converted GLSL ES:\n%s", converted.c_str())
-
-    // Step 9: Set the converted GLSL ES source
-    const char* converted_code = converted.c_str();
-    ShaderSource_Backend(shader, 1, &converted_code, nullptr);
-
-    // Track in unified state manager
-    auto &ss = GLState.shader;
-    auto infoIt = ss.shaderInfo.find(shader);
-    if (infoIt != ss.shaderInfo.end()) {
-        infoIt->second.source = converted;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// glShaderSource - Public entry point (thin wrapper)
-// ---------------------------------------------------------------------------
-GLAPI GLAPIENTRY void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, const GLint* length) {
-    LOG()
-    GLState.Lock();
-    ShaderSource_State(shader, count, string, length);
-    GLState.Unlock();
-}
-
-// ============================================================================
-// Section: glCompileShader - Shader Compilation (DirectGLES pattern)
-//
+// glCompileShader - Compiles a shader object (native ES 3.2)
 // The shader source must already be valid ESSL — conversion is handled by
 // glShaderSource before this function is called.
-// ============================================================================
-
+// Logs compilation errors to help diagnose shader pack issues.
 // ---------------------------------------------------------------------------
-// CompileShader_Backend - Actual GLES call to compile the shader
-// ---------------------------------------------------------------------------
-static void CompileShader_Backend(GLuint shader) {
+void glCompileShader(GLuint shader) {
     GLES.glCompileShader(shader);
-}
-
-// ---------------------------------------------------------------------------
-// CompileShader_State - Validates shader, compiles via GLES, tracks result
-// ---------------------------------------------------------------------------
-static void CompileShader_State(GLuint shader) {
-    // Step 1: Validate shader object exists
-    if (shader == 0) {
-        GLState.errorState.RecordError(ErrorCode::InvalidValue,
-            std::make_unique<GenericErrorInfo>("glCompileShader: shader is 0"));
-        return;
-    }
-
-    // Step 2: Compile via GLES backend
-    CompileShader_Backend(shader);
-
-    // Step 3: Query compile status
     GLint compiled = 0;
     GLES.glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
 
-    // Step 4: Track in unified state manager
+    // Track in unified state manager
     auto &ss = GLState.shader;
     auto it = ss.shaderInfo.find(shader);
     if (it != ss.shaderInfo.end()) {
         it->second.compiled = (compiled == GL_TRUE);
     }
 
-    // Step 5: Log compilation errors for diagnostics
     if (!compiled) {
         GLint infoLen = 0;
         GLES.glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &infoLen);
@@ -451,12 +256,98 @@ static void CompileShader_State(GLuint shader) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// glCompileShader - Public entry point (thin wrapper)
-// ---------------------------------------------------------------------------
-GLAPI GLAPIENTRY void glCompileShader(GLuint shader) {
+// ============================================================================
+// Section: GLSL-to-GLSL-ES Conversion Pipeline
+//
+// glShaderSource is the entry point for shader source code. It implements
+// the CPU simulation layer for non-ES GLSL code by converting desktop GLSL
+// to GLSL ES 3.2 (version 320) using the GLSLtoGLSLES() conversion engine.
+//
+// Pipeline:
+//   1. If shader is already ESSL (100/300/310/320) → native pass-through
+//   2. If shader type is unknown → detect from source content
+//   3. Convert GLSL → GLSL ES 3.2 via GLSLtoGLSLES()
+//   4. On conversion failure → fall back to original source
+// ============================================================================
+
+void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, const GLint* length) {
     LOG()
-    GLState.Lock();
-    CompileShader_State(shader);
-    GLState.Unlock();
+    LOG_D("glShaderSource hook, shader=%d, count=%d", shader, count)
+
+    if (count <= 0 || !string || !string[0]) {
+        // Invalidate cache when clearing source
+        auto& entry = get_shader_cache(shader);
+        entry.is_essl_verified = false;
+        GLES.glShaderSource(shader, count, string, length);
+        return;
+    }
+
+    const char* raw_code = string[0];
+    auto& cacheEntry = get_shader_cache(shader);
+
+    // Step 1: Get shader type — use cache to avoid glGetShaderiv GPU round-trip
+    GLenum shaderType = cacheEntry.type;
+    if (shaderType == 0) [[unlikely]] {
+        // First call: query type from GLES and cache it
+        GLES.glGetShaderiv(shader, GL_SHADER_TYPE, (GLint*)&shaderType);
+        cacheEntry.type = shaderType;
+    }
+
+    // Step 2: Fast path — if previously verified as ESSL, skip scan and pass through
+    if (cacheEntry.is_essl_verified) [[likely]] {
+        LOG_D("Cached ESSL shader %d, passing through directly", shader)
+        GLES.glShaderSource(shader, count, string, length);
+        return;
+    }
+
+    // Step 3: Single-pass scan of source for version + shader type detection
+    ShaderSourceInfo sourceInfo = scanShaderSource(raw_code);
+
+    // Step 4: If shader type is GL_FRAGMENT_SHADER, check if source actually
+    // contains geometry/tessellation/compute shader keywords and correct the type.
+    // (shaderType is always cached by glCreateShader, so shaderType==0 is unreachable)
+    if (shaderType == GL_FRAGMENT_SHADER) {
+        GLenum detected = detect_shader_type_from_source(sourceInfo);
+        if (detected != GL_FRAGMENT_SHADER) {
+            shaderType = detected;
+            cacheEntry.type = shaderType; // update cache with detected type
+            LOG_I("[MobileGLES] Detected non-fragment shader type from source: %d", shaderType)
+        }
+    }
+
+    LOG_D("glShaderSource: shaderType=%d", shaderType)
+
+    // Step 5: Check if already an ES-compatible shader → native pass-through
+    if (is_direct_shader(sourceInfo)) {
+        LOG_D("Direct ES shader (ESSL 100/300/310/320), passing through")
+        cacheEntry.is_essl_verified = true; // mark as verified ESSL for future calls
+        GLES.glShaderSource(shader, count, string, length);
+        return;
+    }
+
+    // Step 6: Convert desktop GLSL → GLSL ES 3.2 (version 320)
+    std::string glsl_code = raw_code;
+    uint essl_version = 320;
+    int return_code = -1;
+    std::string converted = GLSLtoGLSLES(glsl_code.c_str(), shaderType, essl_version, 0, return_code);
+
+    if (return_code < 0) {
+        // Conversion failed — fall back to original source
+        LOG_I("[MobileGLES] GLSL conversion failed for shader %d (type=%d), passing through original desktop GLSL (will likely fail to compile on GLES)", shader, shaderType)
+        GLES.glShaderSource(shader, count, string, length);
+        return;
+    }
+
+    LOG_D("Converted GLSL ES:\n%s", converted.c_str())
+
+    // Step 7: Set the converted GLSL ES source
+    const char* converted_code = converted.c_str();
+    GLES.glShaderSource(shader, 1, &converted_code, nullptr);
+
+    // Track in unified state manager
+    auto &ss = GLState.shader;
+    auto infoIt = ss.shaderInfo.find(shader);
+    if (infoIt != ss.shaderInfo.end()) {
+        infoIt->second.source = converted;
+    }
 }
