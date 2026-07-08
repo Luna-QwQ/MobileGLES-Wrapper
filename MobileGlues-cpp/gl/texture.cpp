@@ -10,6 +10,12 @@
 //
 // Rule: "ES 3.2 native → native, ES 3.2 not native → CPU simulation"
 //
+// Architecture pattern (DirectGLES):
+//   Public function = thin wrapper: Lock → _State → _Backend → Unlock
+//   _State function: validates parameters, converts desktop GL enums to GLES,
+//                    updates GLState, records errors
+//   _Backend function: performs the actual GLES call through the gles loader
+//
 // Native (ES 3.2 directly supports):
 //   - glTexImage2D, glTexImage3D, glTexSubImage2D, glTexSubImage3D
 //   - glTexStorage2D, glTexStorage3D
@@ -573,19 +579,32 @@ static GLenum get_binding_for_target(GLenum target) {
     auto& __bindingSlot = __currentUnit.GetBindingSlot(targetR);                                                       \
     auto tex = __bindingSlot.GetBoundObject()
 
-void glBindTexture(GLenum target, GLuint texture) {
+// ============================================================================
+// glBindTexture: _Backend, _State, Public
+// ============================================================================
+
+void BindTexture_Backend(GLenum target, GLuint texture) {
+    GLES.glBindTexture(target, texture);
+}
+
+void BindTexture_State(GLenum target, GLuint texture) {
     LOG()
     LOG_D("glBindTexture(%s, %d)", glEnumToString(target), texture)
     INIT_CHECK_GL_ERROR
 
     const int currentUnitIndex = GetCurrentTextureUnitIndex();
 
-    GLES.glBindTexture(target, texture);
+    BindTexture_Backend(target, texture);
     CHECK_GL_ERROR_NO_INIT
 
     // Track GL_TEXTURE_2D binding per-unit to avoid glGetIntegerv GPU queries
     if (target == GL_TEXTURE_2D) {
         g_tracked_tex2d_binding[currentUnitIndex] = texture;
+    }
+
+    // Update GLState.texture binding tracking
+    if (currentUnitIndex < MAX_TEXTURE_UNITS) {
+        GLState.texture.texUnits[currentUnitIndex].binding[target] = texture;
     }
 
     auto& currentUnit = GetTextureUnit(currentUnitIndex);
@@ -611,13 +630,45 @@ void glBindTexture(GLenum target, GLuint texture) {
     textureObject->target = targetR;
 }
 
-void glDeleteTextures(GLsizei n, const GLuint* textures) {
+GLAPI GLAPIENTRY void glBindTexture(GLenum target, GLuint texture) {
+    GLState.Lock();
+    BindTexture_State(target, texture);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glDeleteTextures: _Backend, _State, Public
+// ============================================================================
+
+void DeleteTextures_Backend(GLsizei n, const GLuint* textures) {
+    GLES.glDeleteTextures(n, textures);
+}
+
+void DeleteTextures_State(GLsizei n, const GLuint* textures) {
     LOG()
     INIT_CHECK_GL_ERROR
-    GLES.glDeleteTextures(n, textures);
+    DeleteTextures_Backend(n, textures);
     CHECK_GL_ERROR_NO_INIT
 
     for (GLsizei i = 0; i < n; ++i) {
+        // Update GLState.texture ID mapping
+        GLState.texture.textureMap.erase(textures[i]);
+        // Also remove from reverse map
+        for (auto it = GLState.texture.textureMapReverse.begin(); it != GLState.texture.textureMapReverse.end(); ++it) {
+            if (it->second == textures[i]) {
+                GLState.texture.textureMapReverse.erase(it);
+                break;
+            }
+        }
+        // Clear per-unit bindings
+        for (int unit = 0; unit < MAX_TEXTURE_UNITS; ++unit) {
+            for (auto& kv : GLState.texture.texUnits[unit].binding) {
+                if (kv.second == textures[i]) {
+                    kv.second = 0;
+                }
+            }
+        }
+
         MarkTextureObjectForDeletion(textures[i]);
         // Invalidate CPU-side texture binding tracking
         for (int unit = 0; unit < MAX_TEXTURE_IMAGE_UNITS; ++unit) {
@@ -628,7 +679,21 @@ void glDeleteTextures(GLsizei n, const GLuint* textures) {
     }
 }
 
-void glActiveTexture(GLenum texture) {
+GLAPI GLAPIENTRY void glDeleteTextures(GLsizei n, const GLuint* textures) {
+    GLState.Lock();
+    DeleteTextures_State(n, textures);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glActiveTexture: _Backend, _State, Public
+// ============================================================================
+
+void ActiveTexture_Backend(GLenum texture) {
+    GLES.glActiveTexture(texture);
+}
+
+void ActiveTexture_State(GLenum texture) {
     LOG()
     LOG_D("glActiveTexture, texture = %s", glEnumToString(texture))
     if (texture < GL_TEXTURE0 || texture >= GL_TEXTURE0 + MAX_TEXTURE_IMAGE_UNITS) {
@@ -637,18 +702,31 @@ void glActiveTexture(GLenum texture) {
     }
 
     set_gl_state_current_tex_unit(texture - GL_TEXTURE0);
-    GLES.glActiveTexture(texture);
+    GLState.texture.activeUnit = texture - GL_TEXTURE0;
+    ActiveTexture_Backend(texture);
     ActivateTextureUnit(texture - GL_TEXTURE0);
     CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glActiveTexture(GLenum texture) {
+    GLState.Lock();
+    ActiveTexture_State(texture);
+    GLState.Unlock();
 }
 
 // ============================================================================
 // Native texture image specification (ES 3.2)
 // ============================================================================
 
-// --- glTexImage2D (native, with format conversion) ---
-void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height, GLint border,
-                  GLenum format, GLenum type, const GLvoid* pixels) {
+// --- glTexImage2D: _Backend, _State, Public ---
+
+void TexImage2D_Backend(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height,
+                        GLint border, GLenum format, GLenum type, const GLvoid* pixels) {
+    GLES.glTexImage2D(target, level, internalFormat, width, height, border, format, type, pixels);
+}
+
+void TexImage2D_State(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height, GLint border,
+                      GLenum format, GLenum type, const GLvoid* pixels) {
     LOG()
     GLenum transfer_format = format;
 
@@ -715,14 +793,27 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
 
     tex->format = format;
 
-    GLES.glTexImage2D(target, level, internalFormat, width, height, border, format, type, pixels);
+    TexImage2D_Backend(target, level, internalFormat, width, height, border, format, type, pixels);
 
     CHECK_GL_ERROR
 }
 
-// --- glTexImage3D (native, ES 3.2 supports it) ---
-void glTexImage3D(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height, GLsizei depth,
-                  GLint border, GLenum format, GLenum type, const GLvoid* pixels) {
+GLAPI GLAPIENTRY void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height,
+                                   GLint border, GLenum format, GLenum type, const GLvoid* pixels) {
+    GLState.Lock();
+    TexImage2D_State(target, level, internalFormat, width, height, border, format, type, pixels);
+    GLState.Unlock();
+}
+
+// --- glTexImage3D: _Backend, _State, Public ---
+
+void TexImage3D_Backend(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height,
+                        GLsizei depth, GLint border, GLenum format, GLenum type, const GLvoid* pixels) {
+    GLES.glTexImage3D(target, level, internalFormat, width, height, depth, border, format, type, pixels);
+}
+
+void TexImage3D_State(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height, GLsizei depth,
+                      GLint border, GLenum format, GLenum type, const GLvoid* pixels) {
     LOG()
     LOG_D("glTexImage3D, target: 0x%x, level: %d, internalFormat: 0x%x, width: "
           "0x%x, height: %d, depth: %d, border: %d, format: 0x%x, type: %d",
@@ -741,7 +832,7 @@ void glTexImage3D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
         return;
     }
 
-    GLES.glTexImage3D(target, level, internalFormat, width, height, depth, border, format, type, pixels);
+    TexImage3D_Backend(target, level, internalFormat, width, height, depth, border, format, type, pixels);
 
     GET_TEXTURE_OBJECT(target);
     tex->target = ConvertGLEnumToTextureTarget(target);
@@ -757,9 +848,22 @@ void glTexImage3D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
     CHECK_GL_ERROR
 }
 
-// --- glTexSubImage2D (native, with format conversion) ---
-void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height,
-                     GLenum format, GLenum type, const void* pixels) {
+GLAPI GLAPIENTRY void glTexImage3D(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height,
+                                   GLsizei depth, GLint border, GLenum format, GLenum type, const GLvoid* pixels) {
+    GLState.Lock();
+    TexImage3D_State(target, level, internalFormat, width, height, depth, border, format, type, pixels);
+    GLState.Unlock();
+}
+
+// --- glTexSubImage2D: _Backend, _State, Public ---
+
+void TexSubImage2D_Backend(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height,
+                           GLenum format, GLenum type, const void* pixels) {
+    GLES.glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels);
+}
+
+void TexSubImage2D_State(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height,
+                         GLenum format, GLenum type, const void* pixels) {
     LOG()
 
     LOG_D("glTexSubImage2D, target = %s, level = %d, xoffset = %d, yoffset = %d, "
@@ -775,33 +879,59 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, G
         type = GL_UNSIGNED_BYTE;
     }
 
-    GLES.glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels);
+    TexSubImage2D_Backend(target, level, xoffset, yoffset, width, height, format, type, pixels);
 
     CHECK_GL_ERROR
 }
 
-// --- glTexSubImage3D (native) ---
-void glTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width,
-                     GLsizei height, GLsizei depth, GLenum format, GLenum type, const void* pixels) {
+GLAPI GLAPIENTRY void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
+                                      GLsizei height, GLenum format, GLenum type, const void* pixels) {
+    GLState.Lock();
+    TexSubImage2D_State(target, level, xoffset, yoffset, width, height, format, type, pixels);
+    GLState.Unlock();
+}
+
+// --- glTexSubImage3D: _Backend, _State, Public ---
+
+void TexSubImage3D_Backend(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width,
+                           GLsizei height, GLsizei depth, GLenum format, GLenum type, const void* pixels) {
+    GLES.glTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels);
+}
+
+void TexSubImage3D_State(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width,
+                         GLsizei height, GLsizei depth, GLenum format, GLenum type, const void* pixels) {
     LOG()
     LOG_D("glTexSubImage3D, target: %s, level: %d, xoffset: %d, yoffset: %d, zoffset: %d, "
           "width: %d, height: %d, depth: %d, format: %s, type: %s",
           glEnumToString(target), level, xoffset, yoffset, zoffset, width, height, depth, glEnumToString(format),
           glEnumToString(type))
 
-    GLES.glTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels);
+    TexSubImage3D_Backend(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels);
     CHECK_GL_ERROR
 }
 
-// --- glTexStorage2D (native) ---
-void glTexStorage2D(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height) {
+GLAPI GLAPIENTRY void glTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+                                      GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type,
+                                      const void* pixels) {
+    GLState.Lock();
+    TexSubImage3D_State(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels);
+    GLState.Unlock();
+}
+
+// --- glTexStorage2D: _Backend, _State, Public ---
+
+void TexStorage2D_Backend(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height) {
+    GLES.glTexStorage2D(target, levels, internalFormat, width, height);
+}
+
+void TexStorage2D_State(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height) {
     LOG()
     LOG_D("glTexStorage2D, target: %d, levels: %d, internalFormat: %d, width: "
           "%d, height: %d",
           target, levels, internalFormat, width, height)
 
     internal_convert(&internalFormat, nullptr, nullptr);
-    GLES.glTexStorage2D(target, levels, internalFormat, width, height);
+    TexStorage2D_Backend(target, levels, internalFormat, width, height);
 
     GET_TEXTURE_OBJECT(target);
     tex->target = ConvertGLEnumToTextureTarget(target);
@@ -818,9 +948,22 @@ void glTexStorage2D(GLenum target, GLsizei levels, GLenum internalFormat, GLsize
     if (ERR != GL_NO_ERROR) LOG_E("glTexStorage2D ERROR: %d", ERR)
 }
 
-// --- glTexStorage3D (native) ---
-void glTexStorage3D(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height,
-                    GLsizei depth) {
+GLAPI GLAPIENTRY void glTexStorage2D(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width,
+                                     GLsizei height) {
+    GLState.Lock();
+    TexStorage2D_State(target, levels, internalFormat, width, height);
+    GLState.Unlock();
+}
+
+// --- glTexStorage3D: _Backend, _State, Public ---
+
+void TexStorage3D_Backend(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height,
+                          GLsizei depth) {
+    GLES.glTexStorage3D(target, levels, internalFormat, width, height, depth);
+}
+
+void TexStorage3D_State(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height,
+                        GLsizei depth) {
     LOG()
     LOG_D("glTexStorage3D, target: %d, levels: %d, internalFormat: %d, width: "
           "%d, height: %d, depth: %d",
@@ -828,7 +971,7 @@ void glTexStorage3D(GLenum target, GLsizei levels, GLenum internalFormat, GLsize
 
     internal_convert(&internalFormat, nullptr, nullptr);
 
-    GLES.glTexStorage3D(target, levels, internalFormat, width, height, depth);
+    TexStorage3D_Backend(target, levels, internalFormat, width, height, depth);
 
     GET_TEXTURE_OBJECT(target);
     tex->target = ConvertGLEnumToTextureTarget(target);
@@ -844,19 +987,32 @@ void glTexStorage3D(GLenum target, GLsizei levels, GLenum internalFormat, GLsize
     CHECK_GL_ERROR
 }
 
+GLAPI GLAPIENTRY void glTexStorage3D(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width,
+                                     GLsizei height, GLsizei depth) {
+    GLState.Lock();
+    TexStorage3D_State(target, levels, internalFormat, width, height, depth);
+    GLState.Unlock();
+}
+
 // ============================================================================
 // Native compressed texture functions (ES 3.2)
 // ============================================================================
 
-// --- glCompressedTexImage2D (native) ---
-void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height,
-                            GLint border, GLsizei imageSize, const void* data) {
+// --- glCompressedTexImage2D: _Backend, _State, Public ---
+
+void CompressedTexImage2D_Backend(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height,
+                                  GLint border, GLsizei imageSize, const void* data) {
+    GLES.glCompressedTexImage2D(target, level, internalformat, width, height, border, imageSize, data);
+}
+
+void CompressedTexImage2D_State(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height,
+                                GLint border, GLsizei imageSize, const void* data) {
     LOG()
     LOG_D("glCompressedTexImage2D, target: %s, level: %d, internalformat: %s, width: %d, height: %d, "
           "border: %d, imageSize: %d",
           glEnumToString(target), level, glEnumToString(internalformat), width, height, border, imageSize)
 
-    GLES.glCompressedTexImage2D(target, level, internalformat, width, height, border, imageSize, data);
+    CompressedTexImage2D_Backend(target, level, internalformat, width, height, border, imageSize, data);
 
     GET_TEXTURE_OBJECT(target);
     tex->target = ConvertGLEnumToTextureTarget(target);
@@ -872,15 +1028,28 @@ void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, G
     CHECK_GL_ERROR
 }
 
-// --- glCompressedTexImage3D (native) ---
-void glCompressedTexImage3D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height,
-                            GLsizei depth, GLint border, GLsizei imageSize, const void* data) {
+GLAPI GLAPIENTRY void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width,
+                                             GLsizei height, GLint border, GLsizei imageSize, const void* data) {
+    GLState.Lock();
+    CompressedTexImage2D_State(target, level, internalformat, width, height, border, imageSize, data);
+    GLState.Unlock();
+}
+
+// --- glCompressedTexImage3D: _Backend, _State, Public ---
+
+void CompressedTexImage3D_Backend(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height,
+                                  GLsizei depth, GLint border, GLsizei imageSize, const void* data) {
+    GLES.glCompressedTexImage3D(target, level, internalformat, width, height, depth, border, imageSize, data);
+}
+
+void CompressedTexImage3D_State(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height,
+                                GLsizei depth, GLint border, GLsizei imageSize, const void* data) {
     LOG()
     LOG_D("glCompressedTexImage3D, target: %s, level: %d, internalformat: %s, width: %d, height: %d, "
           "depth: %d, border: %d, imageSize: %d",
           glEnumToString(target), level, glEnumToString(internalformat), width, height, depth, border, imageSize)
 
-    GLES.glCompressedTexImage3D(target, level, internalformat, width, height, depth, border, imageSize, data);
+    CompressedTexImage3D_Backend(target, level, internalformat, width, height, depth, border, imageSize, data);
 
     GET_TEXTURE_OBJECT(target);
     tex->target = ConvertGLEnumToTextureTarget(target);
@@ -896,40 +1065,85 @@ void glCompressedTexImage3D(GLenum target, GLint level, GLenum internalformat, G
     CHECK_GL_ERROR
 }
 
-// --- glCompressedTexSubImage2D (native) ---
-void glCompressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
-                               GLsizei height, GLenum format, GLsizei imageSize, const void* data) {
+GLAPI GLAPIENTRY void glCompressedTexImage3D(GLenum target, GLint level, GLenum internalformat, GLsizei width,
+                                             GLsizei height, GLsizei depth, GLint border, GLsizei imageSize,
+                                             const void* data) {
+    GLState.Lock();
+    CompressedTexImage3D_State(target, level, internalformat, width, height, depth, border, imageSize, data);
+    GLState.Unlock();
+}
+
+// --- glCompressedTexSubImage2D: _Backend, _State, Public ---
+
+void CompressedTexSubImage2D_Backend(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
+                                     GLsizei height, GLenum format, GLsizei imageSize, const void* data) {
+    GLES.glCompressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, imageSize, data);
+}
+
+void CompressedTexSubImage2D_State(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
+                                   GLsizei height, GLenum format, GLsizei imageSize, const void* data) {
     LOG()
     LOG_D("glCompressedTexSubImage2D, target: %s, level: %d, xoffset: %d, yoffset: %d, "
           "width: %d, height: %d, format: %s, imageSize: %d",
           glEnumToString(target), level, xoffset, yoffset, width, height, glEnumToString(format), imageSize)
 
-    GLES.glCompressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, imageSize, data);
+    CompressedTexSubImage2D_Backend(target, level, xoffset, yoffset, width, height, format, imageSize, data);
     CHECK_GL_ERROR
 }
 
-// --- glCompressedTexSubImage3D (native) ---
-void glCompressedTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
-                               GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLsizei imageSize,
-                               const void* data) {
+GLAPI GLAPIENTRY void glCompressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                                                GLsizei width, GLsizei height, GLenum format, GLsizei imageSize,
+                                                const void* data) {
+    GLState.Lock();
+    CompressedTexSubImage2D_State(target, level, xoffset, yoffset, width, height, format, imageSize, data);
+    GLState.Unlock();
+}
+
+// --- glCompressedTexSubImage3D: _Backend, _State, Public ---
+
+void CompressedTexSubImage3D_Backend(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+                                     GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLsizei imageSize,
+                                     const void* data) {
+    GLES.glCompressedTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, imageSize,
+                                   data);
+}
+
+void CompressedTexSubImage3D_State(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+                                   GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLsizei imageSize,
+                                   const void* data) {
     LOG()
     LOG_D("glCompressedTexSubImage3D, target: %s, level: %d, xoffset: %d, yoffset: %d, zoffset: %d, "
           "width: %d, height: %d, depth: %d, format: %s, imageSize: %d",
           glEnumToString(target), level, xoffset, yoffset, zoffset, width, height, depth, glEnumToString(format),
           imageSize)
 
-    GLES.glCompressedTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, imageSize,
-                                   data);
+    CompressedTexSubImage3D_Backend(target, level, xoffset, yoffset, zoffset, width, height, depth, format, imageSize,
+                                    data);
     CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glCompressedTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                                                GLint zoffset, GLsizei width, GLsizei height, GLsizei depth,
+                                                GLenum format, GLsizei imageSize, const void* data) {
+    GLState.Lock();
+    CompressedTexSubImage3D_State(target, level, xoffset, yoffset, zoffset, width, height, depth, format, imageSize,
+                                  data);
+    GLState.Unlock();
 }
 
 // ============================================================================
 // Native copy texture functions (ES 3.2)
 // ============================================================================
 
-// --- glCopyTexImage2D (native) ---
-void glCopyTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y, GLsizei width,
-                      GLsizei height, GLint border) {
+// --- glCopyTexImage2D: _Backend, _State, Public ---
+
+void CopyTexImage2D_Backend(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y, GLsizei width,
+                            GLsizei height, GLint border) {
+    GLES.glCopyTexImage2D(target, level, internalFormat, x, y, width, height, border);
+}
+
+void CopyTexImage2D_State(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y, GLsizei width,
+                          GLsizei height, GLint border) {
     LOG()
 
     INIT_CHECK_GL_ERROR
@@ -976,7 +1190,7 @@ void glCopyTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLint x
         releaseTempFBO(tempDrawFBO);
         CHECK_GL_ERROR_NO_INIT
     } else {
-        GLES.glCopyTexImage2D(target, level, internalFormat, x, y, width, height, border);
+        CopyTexImage2D_Backend(target, level, internalFormat, x, y, width, height, border);
         CHECK_GL_ERROR_NO_INIT
     }
 
@@ -994,9 +1208,22 @@ void glCopyTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLint x
     CHECK_GL_ERROR_NO_INIT
 }
 
-// --- glCopyTexSubImage2D (native) ---
-void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width,
-                         GLsizei height) {
+GLAPI GLAPIENTRY void glCopyTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y,
+                                       GLsizei width, GLsizei height, GLint border) {
+    GLState.Lock();
+    CopyTexImage2D_State(target, level, internalFormat, x, y, width, height, border);
+    GLState.Unlock();
+}
+
+// --- glCopyTexSubImage2D: _Backend, _State, Public ---
+
+void CopyTexSubImage2D_Backend(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y,
+                               GLsizei width, GLsizei height) {
+    GLES.glCopyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height);
+}
+
+void CopyTexSubImage2D_State(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y,
+                             GLsizei width, GLsizei height) {
     LOG()
     GLint internalFormat;
     GLES.glGetTexLevelParameteriv(target, level, GL_TEXTURE_INTERNAL_FORMAT, &internalFormat);
@@ -1035,42 +1262,78 @@ void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffse
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDrawFBO);
         releaseTempFBO(tempDrawFBO);
     } else {
-        GLES.glCopyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height);
+        CopyTexSubImage2D_Backend(target, level, xoffset, yoffset, x, y, width, height);
     }
 
     CHECK_GL_ERROR
 }
 
-// --- glCopyTexSubImage3D (native) ---
-void glCopyTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLint x, GLint y,
-                         GLsizei width, GLsizei height) {
+GLAPI GLAPIENTRY void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y,
+                                          GLsizei width, GLsizei height) {
+    GLState.Lock();
+    CopyTexSubImage2D_State(target, level, xoffset, yoffset, x, y, width, height);
+    GLState.Unlock();
+}
+
+// --- glCopyTexSubImage3D: _Backend, _State, Public ---
+
+void CopyTexSubImage3D_Backend(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLint x,
+                               GLint y, GLsizei width, GLsizei height) {
+    GLES.glCopyTexSubImage3D(target, level, xoffset, yoffset, zoffset, x, y, width, height);
+}
+
+void CopyTexSubImage3D_State(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLint x, GLint y,
+                             GLsizei width, GLsizei height) {
     LOG()
     LOG_D("glCopyTexSubImage3D, target: %s, level: %d, xoffset: %d, yoffset: %d, zoffset: %d, "
           "x: %d, y: %d, width: %d, height: %d",
           glEnumToString(target), level, xoffset, yoffset, zoffset, x, y, width, height)
 
-    GLES.glCopyTexSubImage3D(target, level, xoffset, yoffset, zoffset, x, y, width, height);
+    CopyTexSubImage3D_Backend(target, level, xoffset, yoffset, zoffset, x, y, width, height);
     CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glCopyTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+                                          GLint x, GLint y, GLsizei width, GLsizei height) {
+    GLState.Lock();
+    CopyTexSubImage3D_State(target, level, xoffset, yoffset, zoffset, x, y, width, height);
+    GLState.Unlock();
 }
 
 // ============================================================================
 // Native mipmap generation (ES 3.2)
 // ============================================================================
 
-// --- glGenerateMipmap (native) ---
-void glGenerateMipmap(GLenum target) {
+// --- glGenerateMipmap: _Backend, _State, Public ---
+
+void GenerateMipmap_Backend(GLenum target) {
+    GLES.glGenerateMipmap(target);
+}
+
+void GenerateMipmap_State(GLenum target) {
     LOG()
     LOG_D("glGenerateMipmap, target: %s", glEnumToString(target))
-    GLES.glGenerateMipmap(target);
+    GenerateMipmap_Backend(target);
     CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGenerateMipmap(GLenum target) {
+    GLState.Lock();
+    GenerateMipmap_State(target);
+    GLState.Unlock();
 }
 
 // ============================================================================
 // Native texture parameter functions (ES 3.2)
 // ============================================================================
 
-// --- glTexParameterf (native) ---
-void glTexParameterf(GLenum target, GLenum pname, GLfloat param) {
+// --- glTexParameterf: _Backend, _State, Public ---
+
+void TexParameterf_Backend(GLenum target, GLenum pname, GLfloat param) {
+    GLES.glTexParameterf(target, pname, param);
+}
+
+void TexParameterf_State(GLenum target, GLenum pname, GLfloat param) {
     LOG()
     pname = pname_convert(pname);
     LOG_D("glTexParameterf, target: %d, pname: %d, param: %f", target, pname, param)
@@ -1080,12 +1343,23 @@ void glTexParameterf(GLenum target, GLenum pname, GLfloat param) {
         return;
     }
 
-    GLES.glTexParameterf(target, pname, param);
+    TexParameterf_Backend(target, pname, param);
     CHECK_GL_ERROR
 }
 
-// --- glTexParameteri (native) ---
-void glTexParameteri(GLenum target, GLenum pname, GLint param) {
+GLAPI GLAPIENTRY void glTexParameterf(GLenum target, GLenum pname, GLfloat param) {
+    GLState.Lock();
+    TexParameterf_State(target, pname, param);
+    GLState.Unlock();
+}
+
+// --- glTexParameteri: _Backend, _State, Public ---
+
+void TexParameteri_Backend(GLenum target, GLenum pname, GLint param) {
+    GLES.glTexParameteri(target, pname, param);
+}
+
+void TexParameteri_State(GLenum target, GLenum pname, GLint param) {
     LOG()
     pname = pname_convert(pname);
     LOG_D("glTexParameteri, pname: 0x%x", pname)
@@ -1095,12 +1369,23 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param) {
         return;
     }
 
-    GLES.glTexParameteri(target, pname, param);
+    TexParameteri_Backend(target, pname, param);
     CHECK_GL_ERROR
 }
 
-// --- glTexParameteriv (native) ---
-void glTexParameteriv(GLenum target, GLenum pname, const GLint* params) {
+GLAPI GLAPIENTRY void glTexParameteri(GLenum target, GLenum pname, GLint param) {
+    GLState.Lock();
+    TexParameteri_State(target, pname, param);
+    GLState.Unlock();
+}
+
+// --- glTexParameteriv: _Backend, _State, Public ---
+
+void TexParameteriv_Backend(GLenum target, GLenum pname, const GLint* params) {
+    GLES.glTexParameteriv(target, pname, params);
+}
+
+void TexParameteriv_State(GLenum target, GLenum pname, const GLint* params) {
     LOG()
     LOG_D("glTexParameteriv, target: %s, pname: %s", glEnumToString(target), glEnumToString(pname))
 
@@ -1123,42 +1408,86 @@ void glTexParameteriv(GLenum target, GLenum pname, const GLint* params) {
             LOG_E("glTexParameteriv: params is nullptr for GL_TEXTURE_SWIZZLE_RGBA")
         }
     } else {
-        GLES.glTexParameteriv(target, pname, params);
+        TexParameteriv_Backend(target, pname, params);
     }
 
     CHECK_GL_ERROR
 }
 
-// --- glTexParameterfv (native) ---
-void glTexParameterfv(GLenum target, GLenum pname, const GLfloat* params) {
+GLAPI GLAPIENTRY void glTexParameteriv(GLenum target, GLenum pname, const GLint* params) {
+    GLState.Lock();
+    TexParameteriv_State(target, pname, params);
+    GLState.Unlock();
+}
+
+// --- glTexParameterfv: _Backend, _State, Public ---
+
+void TexParameterfv_Backend(GLenum target, GLenum pname, const GLfloat* params) {
+    GLES.glTexParameterfv(target, pname, params);
+}
+
+void TexParameterfv_State(GLenum target, GLenum pname, const GLfloat* params) {
     LOG()
     LOG_D("glTexParameterfv, target: %s, pname: %s", glEnumToString(target), glEnumToString(pname))
-    GLES.glTexParameterfv(target, pname, params);
+    TexParameterfv_Backend(target, pname, params);
     CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTexParameterfv(GLenum target, GLenum pname, const GLfloat* params) {
+    GLState.Lock();
+    TexParameterfv_State(target, pname, params);
+    GLState.Unlock();
 }
 
 // ============================================================================
 // Native texture query functions (ES 3.2)
 // ============================================================================
 
-// --- glGetTexParameteriv (native) ---
-void glGetTexParameteriv(GLenum target, GLenum pname, GLint* params) {
+// --- glGetTexParameteriv: _Backend, _State, Public ---
+
+void GetTexParameteriv_Backend(GLenum target, GLenum pname, GLint* params) {
+    GLES.glGetTexParameteriv(target, pname, params);
+}
+
+void GetTexParameteriv_State(GLenum target, GLenum pname, GLint* params) {
     LOG()
     LOG_D("glGetTexParameteriv, target: %s, pname: %s", glEnumToString(target), glEnumToString(pname))
-    GLES.glGetTexParameteriv(target, pname, params);
+    GetTexParameteriv_Backend(target, pname, params);
     CHECK_GL_ERROR
 }
 
-// --- glGetTexParameterfv (native) ---
-void glGetTexParameterfv(GLenum target, GLenum pname, GLfloat* params) {
+GLAPI GLAPIENTRY void glGetTexParameteriv(GLenum target, GLenum pname, GLint* params) {
+    GLState.Lock();
+    GetTexParameteriv_State(target, pname, params);
+    GLState.Unlock();
+}
+
+// --- glGetTexParameterfv: _Backend, _State, Public ---
+
+void GetTexParameterfv_Backend(GLenum target, GLenum pname, GLfloat* params) {
+    GLES.glGetTexParameterfv(target, pname, params);
+}
+
+void GetTexParameterfv_State(GLenum target, GLenum pname, GLfloat* params) {
     LOG()
     LOG_D("glGetTexParameterfv, target: %s, pname: %s", glEnumToString(target), glEnumToString(pname))
-    GLES.glGetTexParameterfv(target, pname, params);
+    GetTexParameterfv_Backend(target, pname, params);
     CHECK_GL_ERROR
 }
 
-// --- glGetTexLevelParameterfv (native) ---
-void glGetTexLevelParameterfv(GLenum target, GLint level, GLenum pname, GLfloat* params) {
+GLAPI GLAPIENTRY void glGetTexParameterfv(GLenum target, GLenum pname, GLfloat* params) {
+    GLState.Lock();
+    GetTexParameterfv_State(target, pname, params);
+    GLState.Unlock();
+}
+
+// --- glGetTexLevelParameterfv: _Backend, _State, Public ---
+
+void GetTexLevelParameterfv_Backend(GLenum target, GLint level, GLenum pname, GLfloat* params) {
+    GLES.glGetTexLevelParameterfv(target, level, pname, params);
+}
+
+void GetTexLevelParameterfv_State(GLenum target, GLint level, GLenum pname, GLfloat* params) {
     LOG()
     LOG_D("glGetTexLevelParameterfv,target: %d, level: %d, pname: %d", target, level, pname)
     if (gl_state) {
@@ -1179,12 +1508,23 @@ void glGetTexLevelParameterfv(GLenum target, GLint level, GLenum pname, GLfloat*
             }
         }
     }
-    GLES.glGetTexLevelParameterfv(target, level, pname, params);
+    GetTexLevelParameterfv_Backend(target, level, pname, params);
     CHECK_GL_ERROR
 }
 
-// --- glGetTexLevelParameteriv (native) ---
-void glGetTexLevelParameteriv(GLenum target, GLint level, GLenum pname, GLint* params) {
+GLAPI GLAPIENTRY void glGetTexLevelParameterfv(GLenum target, GLint level, GLenum pname, GLfloat* params) {
+    GLState.Lock();
+    GetTexLevelParameterfv_State(target, level, pname, params);
+    GLState.Unlock();
+}
+
+// --- glGetTexLevelParameteriv: _Backend, _State, Public ---
+
+void GetTexLevelParameteriv_Backend(GLenum target, GLint level, GLenum pname, GLint* params) {
+    GLES.glGetTexLevelParameteriv(target, level, pname, params);
+}
+
+void GetTexLevelParameteriv_State(GLenum target, GLint level, GLenum pname, GLint* params) {
     LOG()
     LOG_D("glGetTexLevelParameteriv,target: %s, level: %d, pname: %s", glEnumToString(target), level,
           glEnumToString(pname))
@@ -1208,15 +1548,27 @@ void glGetTexLevelParameteriv(GLenum target, GLint level, GLenum pname, GLint* p
     }
     LOG_D("es.glGetTexLevelParameteriv,target: %s, level: %d, pname: %s", glEnumToString(target), level,
           glEnumToString(pname))
-    GLES.glGetTexLevelParameteriv(target, level, pname, params);
+    GetTexLevelParameteriv_Backend(target, level, pname, params);
     CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGetTexLevelParameteriv(GLenum target, GLint level, GLenum pname, GLint* params) {
+    GLState.Lock();
+    GetTexLevelParameteriv_State(target, level, pname, params);
+    GLState.Unlock();
 }
 
 // ============================================================================
 // Renderbuffer functions (native)
 // ============================================================================
 
-void glRenderbufferStorage(GLenum target, GLenum internalFormat, GLsizei width, GLsizei height) {
+// --- glRenderbufferStorage: _Backend, _State, Public ---
+
+void RenderbufferStorage_Backend(GLenum target, GLenum internalFormat, GLsizei width, GLsizei height) {
+    GLES.glRenderbufferStorage(target, internalFormat, width, height);
+}
+
+void RenderbufferStorage_State(GLenum target, GLenum internalFormat, GLsizei width, GLsizei height) {
     LOG()
 
     INIT_CHECK_GL_ERROR_FORCE
@@ -1225,13 +1577,26 @@ void glRenderbufferStorage(GLenum target, GLenum internalFormat, GLsizei width, 
           "height: %d",
           glEnumToString(target), glEnumToString(internalFormat), width, height)
 
-    GLES.glRenderbufferStorage(target, internalFormat, width, height);
+    RenderbufferStorage_Backend(target, internalFormat, width, height);
 
     CHECK_GL_ERROR_NO_INIT
 }
 
-void glRenderbufferStorageMultisample(GLenum target, GLsizei samples, GLenum internalFormat, GLsizei width,
-                                      GLsizei height) {
+GLAPI GLAPIENTRY void glRenderbufferStorage(GLenum target, GLenum internalFormat, GLsizei width, GLsizei height) {
+    GLState.Lock();
+    RenderbufferStorage_State(target, internalFormat, width, height);
+    GLState.Unlock();
+}
+
+// --- glRenderbufferStorageMultisample: _Backend, _State, Public ---
+
+void RenderbufferStorageMultisample_Backend(GLenum target, GLsizei samples, GLenum internalFormat, GLsizei width,
+                                            GLsizei height) {
+    GLES.glRenderbufferStorageMultisample(target, samples, internalFormat, width, height);
+}
+
+void RenderbufferStorageMultisample_State(GLenum target, GLsizei samples, GLenum internalFormat, GLsizei width,
+                                          GLsizei height) {
     LOG()
 
     INIT_CHECK_GL_ERROR_FORCE
@@ -1240,16 +1605,26 @@ void glRenderbufferStorageMultisample(GLenum target, GLsizei samples, GLenum int
           "internalFormat: %d, width: %d, height: %d",
           target, samples, internalFormat, width, height)
 
-    GLES.glRenderbufferStorageMultisample(target, samples, internalFormat, width, height);
+    RenderbufferStorageMultisample_Backend(target, samples, internalFormat, width, height);
 
     CHECK_GL_ERROR_NO_INIT
+}
+
+GLAPI GLAPIENTRY void glRenderbufferStorageMultisample(GLenum target, GLsizei samples, GLenum internalFormat,
+                                                       GLsizei width, GLsizei height) {
+    GLState.Lock();
+    RenderbufferStorageMultisample_State(target, samples, internalFormat, width, height);
+    GLState.Unlock();
 }
 
 // ============================================================================
 // Other texture functions (keep existing logic)
 // ============================================================================
 
-void glGetTexImage(GLenum target, GLint level, GLenum format, GLenum type, void* pixels) {
+// --- glGetTexImage: _Backend, _State, Public ---
+
+// GetTexImage has no direct _Backend since it's implemented via FBO+ReadPixels
+void GetTexImage_State(GLenum target, GLint level, GLenum format, GLenum type, void* pixels) {
     LOG()
     LOG_D("glGetTexImage, target: 0x%x, level: %d, format: 0x%x, type: 0x%x, pixels: 0x%x", target, level, format, type,
           pixels)
@@ -1325,12 +1700,24 @@ void glGetTexImage(GLenum target, GLint level, GLenum format, GLenum type, void*
     releaseTempFBO(tempFBO);
 }
 
+GLAPI GLAPIENTRY void glGetTexImage(GLenum target, GLint level, GLenum format, GLenum type, void* pixels) {
+    GLState.Lock();
+    GetTexImage_State(target, level, format, type, pixels);
+    GLState.Unlock();
+}
+
 #if GLOBAL_DEBUG || DEBUG
 #include "../config/config.h"
 #include <fstream>
 #endif
 
-void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void* pixels) {
+// --- glReadPixels: _Backend, _State, Public ---
+
+void ReadPixels_Backend(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void* pixels) {
+    GLES.glReadPixels(x, y, width, height, format, type, pixels);
+}
+
+void ReadPixels_State(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void* pixels) {
     LOG()
     LOG_D("glReadPixels, x=%d, y=%d, width=%d, height=%d, format=0x%x, "
           "type=0x%x, pixels=0x%x",
@@ -1346,7 +1733,7 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format
     LOG_D("glReadPixels converted, x=%d, y=%d, width=%d, height=%d, format=0x%x, "
           "type=0x%x, pixels=0x%x",
           x, y, width, height, format, type, pixels)
-    GLES.glReadPixels(x, y, width, height, format, type, pixels);
+    ReadPixels_Backend(x, y, width, height, format, type, pixels);
 
 #if GLOBAL_DEBUG || DEBUG
     if (prevFormat == GL_BGRA && type == GL_UNSIGNED_BYTE) {
@@ -1363,7 +1750,16 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format
     CHECK_GL_ERROR
 }
 
-void glClearTexImage(GLuint texture, GLint level, GLenum format, GLenum type, const void* data) {
+GLAPI GLAPIENTRY void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type,
+                                   void* pixels) {
+    GLState.Lock();
+    ReadPixels_State(x, y, width, height, format, type, pixels);
+    GLState.Unlock();
+}
+
+// --- glClearTexImage: _State, Public (no _Backend, uses FBO) ---
+
+void ClearTexImage_State(GLuint texture, GLint level, GLenum format, GLenum type, const void* data) {
     LOG()
     LOG_D("glClearTexImage, texture: %d, level: %d, format: %d, type: %d", texture, level, format, type)
     INIT_CHECK_GL_ERROR_FORCE
@@ -1430,9 +1826,21 @@ void glClearTexImage(GLuint texture, GLint level, GLenum format, GLenum type, co
     CHECK_GL_ERROR_NO_INIT
 }
 
-void glPixelStorei(GLenum pname, GLint param) {
-    LOG_D("glPixelStorei, pname = %s, param = %d", glEnumToString(pname), param)
+GLAPI GLAPIENTRY void glClearTexImage(GLuint texture, GLint level, GLenum format, GLenum type, const void* data) {
+    GLState.Lock();
+    ClearTexImage_State(texture, level, format, type, data);
+    GLState.Unlock();
+}
+
+// --- glPixelStorei: _Backend, _State, Public ---
+
+void PixelStorei_Backend(GLenum pname, GLint param) {
     GLES.glPixelStorei(pname, param);
+}
+
+void PixelStorei_State(GLenum pname, GLint param) {
+    LOG_D("glPixelStorei, pname = %s, param = %d", glEnumToString(pname), param)
+    PixelStorei_Backend(pname, param);
     // Keep CPU-side cache in sync to avoid glGetIntegerv GPU round-trips
     switch (pname) {
         case GL_UNPACK_ALIGNMENT:  GLState.texture.unpackAlignment = param;  break;
@@ -1449,7 +1857,1056 @@ void glPixelStorei(GLenum pname, GLint param) {
         case GL_PACK_SKIP_IMAGES:  GLState.texture.packSkipImages = param;   break;
         default: break;
     }
+    // Also update RenderState pixel store (new API)
+    switch (pname) {
+        case GL_UNPACK_ALIGNMENT:    GLState.renderState.SetPixelStoreParam(PixelStoreParam::UnpackAlignment, param); break;
+        case GL_UNPACK_ROW_LENGTH:   GLState.renderState.SetPixelStoreParam(PixelStoreParam::UnpackRowLength, param); break;
+        case GL_UNPACK_IMAGE_HEIGHT: GLState.renderState.SetPixelStoreParam(PixelStoreParam::UnpackImageHeight, param); break;
+        case GL_UNPACK_SKIP_PIXELS:  GLState.renderState.SetPixelStoreParam(PixelStoreParam::UnpackSkipPixels, param); break;
+        case GL_UNPACK_SKIP_ROWS:    GLState.renderState.SetPixelStoreParam(PixelStoreParam::UnpackSkipRows, param); break;
+        case GL_UNPACK_SKIP_IMAGES:  GLState.renderState.SetPixelStoreParam(PixelStoreParam::UnpackSkipImages, param); break;
+        case GL_PACK_ALIGNMENT:      GLState.renderState.SetPixelStoreParam(PixelStoreParam::PackAlignment, param); break;
+        case GL_PACK_ROW_LENGTH:     GLState.renderState.SetPixelStoreParam(PixelStoreParam::PackRowLength, param); break;
+        case GL_PACK_IMAGE_HEIGHT:   GLState.renderState.SetPixelStoreParam(PixelStoreParam::PackImageHeight, param); break;
+        case GL_PACK_SKIP_PIXELS:    GLState.renderState.SetPixelStoreParam(PixelStoreParam::PackSkipPixels, param); break;
+        case GL_PACK_SKIP_ROWS:      GLState.renderState.SetPixelStoreParam(PixelStoreParam::PackSkipRows, param); break;
+        case GL_PACK_SKIP_IMAGES:    GLState.renderState.SetPixelStoreParam(PixelStoreParam::PackSkipImages, param); break;
+        default: break;
+    }
     CHECK_GL_ERROR
 }
 
-// glGenerateTextureMipmap is handled in ExtWrappers/DSAWrapper.cpp (DSA emulation)
+GLAPI GLAPIENTRY void glPixelStorei(GLenum pname, GLint param) {
+    GLState.Lock();
+    PixelStorei_State(pname, param);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glTexBuffer: _Backend, _State, Public
+// ============================================================================
+
+void TexBuffer_Backend(GLenum target, GLenum internalformat, GLuint buffer) {
+    GLES.glTexBuffer(target, internalformat, buffer);
+}
+
+void TexBuffer_State(GLenum target, GLenum internalformat, GLuint buffer) {
+    LOG()
+    LOG_D("glTexBuffer, target: %s, internalformat: %s, buffer: %u",
+          glEnumToString(target), glEnumToString(internalformat), buffer)
+    TexBuffer_Backend(target, internalformat, buffer);
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer) {
+    GLState.Lock();
+    TexBuffer_State(target, internalformat, buffer);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glTexBufferRange: _Backend, _State, Public
+// ============================================================================
+
+void TexBufferRange_Backend(GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size) {
+    GLES.glTexBufferRange(target, internalformat, buffer, offset, size);
+}
+
+void TexBufferRange_State(GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size) {
+    LOG()
+    LOG_D("glTexBufferRange, target: %s, internalformat: %s, buffer: %u, offset: %ld, size: %ld",
+          glEnumToString(target), glEnumToString(internalformat), buffer, (long)offset, (long)size)
+    TexBufferRange_Backend(target, internalformat, buffer, offset, size);
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTexBufferRange(GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset,
+                                       GLsizeiptr size) {
+    GLState.Lock();
+    TexBufferRange_State(target, internalformat, buffer, offset, size);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glGenerateTextureMipmap: _Backend, _State, Public
+// ============================================================================
+
+void GenerateTextureMipmap_Backend(GLuint texture) {
+    GLES.glGenerateMipmap(GL_TEXTURE_2D);
+    // Note: glGenerateTextureMipmap is DSA; ES 3.2 supports glGenerateMipmap only.
+    // The DSA wrapper handles binding the texture first.
+}
+
+void GenerateTextureMipmap_State(GLuint texture) {
+    LOG()
+    LOG_D("glGenerateTextureMipmap, texture: %u", texture)
+    // DSA: temporarily bind texture, generate mipmap, restore previous binding
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    }
+    GLES.glGenerateMipmap(GL_TEXTURE_2D);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGenerateTextureMipmap(GLuint texture) {
+    GLState.Lock();
+    GenerateTextureMipmap_State(texture);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glTexImage1D: _Backend, _State, Public (not supported in ES 3.2, stub)
+// ============================================================================
+
+void TexImage1D_Backend(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLint border,
+                        GLenum format, GLenum type, const GLvoid* pixels) {
+    // Not supported in OpenGL ES 3.2
+    (void)target; (void)level; (void)internalFormat; (void)width; (void)border;
+    (void)format; (void)type; (void)pixels;
+    GLState.errorState.RecordError(ErrorCode::InvalidOperation,
+        std::make_unique<GenericErrorInfo>("glTexImage1D is not supported in OpenGL ES 3.2"));
+}
+
+void TexImage1D_State(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLint border,
+                      GLenum format, GLenum type, const GLvoid* pixels) {
+    LOG()
+    LOG_D("glTexImage1D, target: %s, level: %d, internalFormat: %s, width: %d, border: %d, format: %s, type: %s",
+          glEnumToString(target), level, glEnumToString(internalFormat), width, border, glEnumToString(format),
+          glEnumToString(type))
+    TexImage1D_Backend(target, level, internalFormat, width, border, format, type, pixels);
+}
+
+GLAPI GLAPIENTRY void glTexImage1D(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLint border,
+                                   GLenum format, GLenum type, const GLvoid* pixels) {
+    GLState.Lock();
+    TexImage1D_State(target, level, internalFormat, width, border, format, type, pixels);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glTexSubImage1D: _Backend, _State, Public (not supported in ES 3.2, stub)
+// ============================================================================
+
+void TexSubImage1D_Backend(GLenum target, GLint level, GLint xoffset, GLsizei width, GLenum format, GLenum type,
+                           const void* pixels) {
+    (void)target; (void)level; (void)xoffset; (void)width; (void)format; (void)type; (void)pixels;
+    GLState.errorState.RecordError(ErrorCode::InvalidOperation,
+        std::make_unique<GenericErrorInfo>("glTexSubImage1D is not supported in OpenGL ES 3.2"));
+}
+
+void TexSubImage1D_State(GLenum target, GLint level, GLint xoffset, GLsizei width, GLenum format, GLenum type,
+                         const void* pixels) {
+    LOG()
+    LOG_D("glTexSubImage1D, target: %s, level: %d, xoffset: %d, width: %d, format: %s, type: %s",
+          glEnumToString(target), level, xoffset, width, glEnumToString(format), glEnumToString(type))
+    TexSubImage1D_Backend(target, level, xoffset, width, format, type, pixels);
+}
+
+GLAPI GLAPIENTRY void glTexSubImage1D(GLenum target, GLint level, GLint xoffset, GLsizei width, GLenum format,
+                                      GLenum type, const void* pixels) {
+    GLState.Lock();
+    TexSubImage1D_State(target, level, xoffset, width, format, type, pixels);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glTexStorage1D: _Backend, _State, Public (not supported in ES 3.2, stub)
+// ============================================================================
+
+void TexStorage1D_Backend(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width) {
+    (void)target; (void)levels; (void)internalFormat; (void)width;
+    GLState.errorState.RecordError(ErrorCode::InvalidOperation,
+        std::make_unique<GenericErrorInfo>("glTexStorage1D is not supported in OpenGL ES 3.2"));
+}
+
+void TexStorage1D_State(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width) {
+    LOG()
+    LOG_D("glTexStorage1D, target: %d, levels: %d, internalFormat: %d, width: %d",
+          target, levels, internalFormat, width)
+    TexStorage1D_Backend(target, levels, internalFormat, width);
+}
+
+GLAPI GLAPIENTRY void glTexStorage1D(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width) {
+    GLState.Lock();
+    TexStorage1D_State(target, levels, internalFormat, width);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glTexImage2DMultisample: _Backend, _State, Public (stub)
+// ============================================================================
+
+void TexImage2DMultisample_Backend(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
+                                   GLsizei height, GLboolean fixedsamplelocations) {
+    (void)target; (void)samples; (void)internalformat; (void)width; (void)height; (void)fixedsamplelocations;
+    GLState.errorState.RecordError(ErrorCode::InvalidOperation,
+        std::make_unique<GenericErrorInfo>("glTexImage2DMultisample is not supported in OpenGL ES 3.2"));
+}
+
+void TexImage2DMultisample_State(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
+                                 GLsizei height, GLboolean fixedsamplelocations) {
+    LOG()
+    LOG_D("glTexImage2DMultisample, target: %s, samples: %d, internalformat: %s, width: %d, height: %d",
+          glEnumToString(target), samples, glEnumToString(internalformat), width, height)
+    TexImage2DMultisample_Backend(target, samples, internalformat, width, height, fixedsamplelocations);
+}
+
+GLAPI GLAPIENTRY void glTexImage2DMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
+                                              GLsizei height, GLboolean fixedsamplelocations) {
+    GLState.Lock();
+    TexImage2DMultisample_State(target, samples, internalformat, width, height, fixedsamplelocations);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glTexImage3DMultisample: _Backend, _State, Public (stub)
+// ============================================================================
+
+void TexImage3DMultisample_Backend(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
+                                   GLsizei height, GLsizei depth, GLboolean fixedsamplelocations) {
+    (void)target; (void)samples; (void)internalformat; (void)width; (void)height; (void)depth; (void)fixedsamplelocations;
+    GLState.errorState.RecordError(ErrorCode::InvalidOperation,
+        std::make_unique<GenericErrorInfo>("glTexImage3DMultisample is not supported in OpenGL ES 3.2"));
+}
+
+void TexImage3DMultisample_State(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
+                                 GLsizei height, GLsizei depth, GLboolean fixedsamplelocations) {
+    LOG()
+    LOG_D("glTexImage3DMultisample, target: %s, samples: %d, internalformat: %s, width: %d, height: %d, depth: %d",
+          glEnumToString(target), samples, glEnumToString(internalformat), width, height, depth)
+    TexImage3DMultisample_Backend(target, samples, internalformat, width, height, depth, fixedsamplelocations);
+}
+
+GLAPI GLAPIENTRY void glTexImage3DMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
+                                              GLsizei height, GLsizei depth, GLboolean fixedsamplelocations) {
+    GLState.Lock();
+    TexImage3DMultisample_State(target, samples, internalformat, width, height, depth, fixedsamplelocations);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glTexStorage2DMultisample: _Backend, _State, Public
+// ============================================================================
+
+void TexStorage2DMultisample_Backend(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
+                                     GLsizei height, GLboolean fixedsamplelocations) {
+    GLES.glTexStorage2DMultisample(target, samples, internalformat, width, height, fixedsamplelocations);
+}
+
+void TexStorage2DMultisample_State(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
+                                   GLsizei height, GLboolean fixedsamplelocations) {
+    LOG()
+    LOG_D("glTexStorage2DMultisample, target: %s, samples: %d, internalformat: %s, width: %d, height: %d",
+          glEnumToString(target), samples, glEnumToString(internalformat), width, height)
+    TexStorage2DMultisample_Backend(target, samples, internalformat, width, height, fixedsamplelocations);
+
+    GET_TEXTURE_OBJECT(target);
+    tex->target = ConvertGLEnumToTextureTarget(target);
+    tex->internal_format = internalformat;
+    tex->width = width;
+    tex->height = height;
+    tex->depth = 1;
+
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTexStorage2DMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
+                                                GLsizei height, GLboolean fixedsamplelocations) {
+    GLState.Lock();
+    TexStorage2DMultisample_State(target, samples, internalformat, width, height, fixedsamplelocations);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glTexStorage3DMultisample: _Backend, _State, Public
+// ============================================================================
+
+void TexStorage3DMultisample_Backend(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
+                                     GLsizei height, GLsizei depth, GLboolean fixedsamplelocations) {
+    GLES.glTexStorage3DMultisample(target, samples, internalformat, width, height, depth, fixedsamplelocations);
+}
+
+void TexStorage3DMultisample_State(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
+                                   GLsizei height, GLsizei depth, GLboolean fixedsamplelocations) {
+    LOG()
+    LOG_D("glTexStorage3DMultisample, target: %s, samples: %d, internalformat: %s, width: %d, height: %d, depth: %d",
+          glEnumToString(target), samples, glEnumToString(internalformat), width, height, depth)
+    TexStorage3DMultisample_Backend(target, samples, internalformat, width, height, depth, fixedsamplelocations);
+
+    GET_TEXTURE_OBJECT(target);
+    tex->target = ConvertGLEnumToTextureTarget(target);
+    tex->internal_format = internalformat;
+    tex->width = width;
+    tex->height = height;
+    tex->depth = depth;
+
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTexStorage3DMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
+                                                GLsizei height, GLsizei depth, GLboolean fixedsamplelocations) {
+    GLState.Lock();
+    TexStorage3DMultisample_State(target, samples, internalformat, width, height, depth, fixedsamplelocations);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glBindImageTexture: _Backend, _State, Public
+// ============================================================================
+
+void BindImageTexture_Backend(GLuint unit, GLuint texture, GLint level, GLboolean layered, GLint layer,
+                              GLenum access, GLenum format) {
+    GLES.glBindImageTexture(unit, texture, level, layered, layer, access, format);
+}
+
+void BindImageTexture_State(GLuint unit, GLuint texture, GLint level, GLboolean layered, GLint layer,
+                            GLenum access, GLenum format) {
+    LOG()
+    LOG_D("glBindImageTexture, unit: %u, texture: %u, level: %d, layered: %d, layer: %d, access: %s, format: %s",
+          unit, texture, level, layered, layer, glEnumToString(access), glEnumToString(format))
+
+    BindImageTexture_Backend(unit, texture, level, layered, layer, access, format);
+
+    // Update GLState image unit tracking
+    if (unit < MAX_IMAGE_UNITS) {
+        GLState.image.imageUnits[unit].texture = texture;
+        GLState.image.imageUnits[unit].level = level;
+        GLState.image.imageUnits[unit].layered = layered;
+        GLState.image.imageUnits[unit].layer = layer;
+        GLState.image.imageUnits[unit].access = access;
+        GLState.image.imageUnits[unit].format = format;
+    }
+
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glBindImageTexture(GLuint unit, GLuint texture, GLint level, GLboolean layered, GLint layer,
+                                         GLenum access, GLenum format) {
+    GLState.Lock();
+    BindImageTexture_State(unit, texture, level, layered, layer, access, format);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glBindTextureUnit: _Backend, _State, Public
+// ============================================================================
+
+void BindTextureUnit_Backend(GLuint unit, GLuint texture) {
+    // ES 3.2 doesn't have glBindTextureUnit; emulate via active texture + bind
+    GLint prevUnit = GLState.texture.activeUnit;
+    GLES.glActiveTexture(GL_TEXTURE0 + unit);
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glActiveTexture(GL_TEXTURE0 + prevUnit);
+}
+
+void BindTextureUnit_State(GLuint unit, GLuint texture) {
+    LOG()
+    LOG_D("glBindTextureUnit, unit: %u, texture: %u", unit, texture)
+
+    if (unit >= (GLuint)MAX_TEXTURE_UNITS) {
+        LOG_E("glBindTextureUnit: Invalid unit %u", unit)
+        return;
+    }
+
+    BindTextureUnit_Backend(unit, texture);
+
+    // Update GLState tracking
+    GLState.texture.texUnits[unit].binding[GL_TEXTURE_2D] = texture;
+
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glBindTextureUnit(GLuint unit, GLuint texture) {
+    GLState.Lock();
+    BindTextureUnit_State(unit, texture);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glCreateTextures: _Backend, _State, Public
+// ============================================================================
+
+void CreateTextures_Backend(GLenum target, GLsizei n, GLuint* textures) {
+    GLES.glGenTextures(n, textures);
+}
+
+void CreateTextures_State(GLenum target, GLsizei n, GLuint* textures) {
+    LOG()
+    LOG_D("glCreateTextures, target: %s, n: %d", glEnumToString(target), n)
+
+    if (n <= 0 || !textures) {
+        LOG_E("glCreateTextures: Invalid parameters")
+        return;
+    }
+
+    CreateTextures_Backend(target, n, textures);
+
+    for (GLsizei i = 0; i < n; ++i) {
+        GLState.texture.textureMap[textures[i]] = textures[i];
+        GLState.texture.textureMapReverse[textures[i]] = textures[i];
+    }
+
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glCreateTextures(GLenum target, GLsizei n, GLuint* textures) {
+    GLState.Lock();
+    CreateTextures_State(target, n, textures);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glCopyImageSubData: _Backend, _State, Public
+// ============================================================================
+
+void CopyImageSubData_Backend(GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ,
+                              GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ,
+                              GLsizei srcWidth, GLsizei srcHeight, GLsizei srcDepth) {
+    GLES.glCopyImageSubData(srcName, srcTarget, srcLevel, srcX, srcY, srcZ,
+                            dstName, dstTarget, dstLevel, dstX, dstY, dstZ,
+                            srcWidth, srcHeight, srcDepth);
+}
+
+void CopyImageSubData_State(GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ,
+                            GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ,
+                            GLsizei srcWidth, GLsizei srcHeight, GLsizei srcDepth) {
+    LOG()
+    LOG_D("glCopyImageSubData, srcName: %u, srcTarget: %s, srcLevel: %d, dstName: %u, dstTarget: %s, dstLevel: %d",
+          srcName, glEnumToString(srcTarget), srcLevel, dstName, glEnumToString(dstTarget), dstLevel)
+
+    CopyImageSubData_Backend(srcName, srcTarget, srcLevel, srcX, srcY, srcZ,
+                             dstName, dstTarget, dstLevel, dstX, dstY, dstZ,
+                             srcWidth, srcHeight, srcDepth);
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glCopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY,
+                                         GLint srcZ, GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX,
+                                         GLint dstY, GLint dstZ, GLsizei srcWidth, GLsizei srcHeight,
+                                         GLsizei srcDepth) {
+    GLState.Lock();
+    CopyImageSubData_State(srcName, srcTarget, srcLevel, srcX, srcY, srcZ,
+                           dstName, dstTarget, dstLevel, dstX, dstY, dstZ,
+                           srcWidth, srcHeight, srcDepth);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glGetMultisamplefv: _Backend, _State, Public
+// ============================================================================
+
+void GetMultisamplefv_Backend(GLenum pname, GLuint index, GLfloat* val) {
+    GLES.glGetMultisamplefv(pname, index, val);
+}
+
+void GetMultisamplefv_State(GLenum pname, GLuint index, GLfloat* val) {
+    LOG()
+    LOG_D("glGetMultisamplefv, pname: %s, index: %u", glEnumToString(pname), index)
+    GetMultisamplefv_Backend(pname, index, val);
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGetMultisamplefv(GLenum pname, GLuint index, GLfloat* val) {
+    GLState.Lock();
+    GetMultisamplefv_State(pname, index, val);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glGetInternalformativ: _Backend, _State, Public
+// ============================================================================
+
+void GetInternalformativ_Backend(GLenum target, GLenum internalformat, GLenum pname, GLsizei bufSize, GLint* params) {
+    GLES.glGetInternalformativ(target, internalformat, pname, bufSize, params);
+}
+
+void GetInternalformativ_State(GLenum target, GLenum internalformat, GLenum pname, GLsizei bufSize, GLint* params) {
+    LOG()
+    LOG_D("glGetInternalformativ, target: %s, internalformat: %s, pname: %s, bufSize: %d",
+          glEnumToString(target), glEnumToString(internalformat), glEnumToString(pname), bufSize)
+    GetInternalformativ_Backend(target, internalformat, pname, bufSize, params);
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGetInternalformativ(GLenum target, GLenum internalformat, GLenum pname, GLsizei bufSize,
+                                            GLint* params) {
+    GLState.Lock();
+    GetInternalformativ_State(target, internalformat, pname, bufSize, params);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glGetCompressedTexImage: _Backend, _State, Public (stub)
+// ============================================================================
+
+void GetCompressedTexImage_Backend(GLenum target, GLint level, void* img) {
+    (void)target; (void)level; (void)img;
+    GLState.errorState.RecordError(ErrorCode::InvalidOperation,
+        std::make_unique<GenericErrorInfo>("glGetCompressedTexImage is not supported in OpenGL ES 3.2"));
+}
+
+void GetCompressedTexImage_State(GLenum target, GLint level, void* img) {
+    LOG()
+    LOG_D("glGetCompressedTexImage, target: %s, level: %d", glEnumToString(target), level)
+    GetCompressedTexImage_Backend(target, level, img);
+}
+
+GLAPI GLAPIENTRY void glGetCompressedTexImage(GLenum target, GLint level, void* img) {
+    GLState.Lock();
+    GetCompressedTexImage_State(target, level, img);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glTexParameterIiv: _Backend, _State, Public
+// ============================================================================
+
+void TexParameterIiv_Backend(GLenum target, GLenum pname, const GLint* params) {
+    GLES.glTexParameterIiv(target, pname, params);
+}
+
+void TexParameterIiv_State(GLenum target, GLenum pname, const GLint* params) {
+    LOG()
+    LOG_D("glTexParameterIiv, target: %s, pname: %s", glEnumToString(target), glEnumToString(pname))
+    TexParameterIiv_Backend(target, pname, params);
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTexParameterIiv(GLenum target, GLenum pname, const GLint* params) {
+    GLState.Lock();
+    TexParameterIiv_State(target, pname, params);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glTexParameterIuiv: _Backend, _State, Public
+// ============================================================================
+
+void TexParameterIuiv_Backend(GLenum target, GLenum pname, const GLuint* params) {
+    GLES.glTexParameterIuiv(target, pname, params);
+}
+
+void TexParameterIuiv_State(GLenum target, GLenum pname, const GLuint* params) {
+    LOG()
+    LOG_D("glTexParameterIuiv, target: %s, pname: %s", glEnumToString(target), glEnumToString(pname))
+    TexParameterIuiv_Backend(target, pname, params);
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTexParameterIuiv(GLenum target, GLenum pname, const GLuint* params) {
+    GLState.Lock();
+    TexParameterIuiv_State(target, pname, params);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glGetTexParameterIiv: _Backend, _State, Public
+// ============================================================================
+
+void GetTexParameterIiv_Backend(GLenum target, GLenum pname, GLint* params) {
+    GLES.glGetTexParameterIiv(target, pname, params);
+}
+
+void GetTexParameterIiv_State(GLenum target, GLenum pname, GLint* params) {
+    LOG()
+    LOG_D("glGetTexParameterIiv, target: %s, pname: %s", glEnumToString(target), glEnumToString(pname))
+    GetTexParameterIiv_Backend(target, pname, params);
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGetTexParameterIiv(GLenum target, GLenum pname, GLint* params) {
+    GLState.Lock();
+    GetTexParameterIiv_State(target, pname, params);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// glGetTexParameterIuiv: _Backend, _State, Public
+// ============================================================================
+
+void GetTexParameterIuiv_Backend(GLenum target, GLenum pname, GLuint* params) {
+    GLES.glGetTexParameterIuiv(target, pname, params);
+}
+
+void GetTexParameterIuiv_State(GLenum target, GLenum pname, GLuint* params) {
+    LOG()
+    LOG_D("glGetTexParameterIuiv, target: %s, pname: %s", glEnumToString(target), glEnumToString(pname))
+    GetTexParameterIuiv_Backend(target, pname, params);
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGetTexParameterIuiv(GLenum target, GLenum pname, GLuint* params) {
+    GLState.Lock();
+    GetTexParameterIuiv_State(target, pname, params);
+    GLState.Unlock();
+}
+
+// ============================================================================
+// DSA glTexture* functions (stubs - emulated via binding/unbinding)
+// ============================================================================
+
+// glTextureStorage1D
+void TextureStorage1D_State(GLuint texture, GLsizei levels, GLenum internalformat, GLsizei width) {
+    LOG()
+    LOG_D("glTextureStorage1D, texture: %u, levels: %d, internalformat: %s, width: %d",
+          texture, levels, glEnumToString(internalformat), width)
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glTexStorage2D(GL_TEXTURE_2D, levels, internalformat, width, 1);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTextureStorage1D(GLuint texture, GLsizei levels, GLenum internalformat, GLsizei width) {
+    GLState.Lock();
+    TextureStorage1D_State(texture, levels, internalformat, width);
+    GLState.Unlock();
+}
+
+// glTextureStorage2D
+void TextureStorage2D_State(GLuint texture, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height) {
+    LOG()
+    LOG_D("glTextureStorage2D, texture: %u, levels: %d, internalformat: %s, width: %d, height: %d",
+          texture, levels, glEnumToString(internalformat), width, height)
+    internal_convert(&internalformat, nullptr, nullptr);
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glTexStorage2D(GL_TEXTURE_2D, levels, internalformat, width, height);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTextureStorage2D(GLuint texture, GLsizei levels, GLenum internalformat, GLsizei width,
+                                         GLsizei height) {
+    GLState.Lock();
+    TextureStorage2D_State(texture, levels, internalformat, width, height);
+    GLState.Unlock();
+}
+
+// glTextureStorage3D
+void TextureStorage3D_State(GLuint texture, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height,
+                            GLsizei depth) {
+    LOG()
+    LOG_D("glTextureStorage3D, texture: %u, levels: %d, internalformat: %s, width: %d, height: %d, depth: %d",
+          texture, levels, glEnumToString(internalformat), width, height, depth)
+    internal_convert(&internalformat, nullptr, nullptr);
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_3D, texture);
+    GLES.glTexStorage3D(GL_TEXTURE_3D, levels, internalformat, width, height, depth);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTextureStorage3D(GLuint texture, GLsizei levels, GLenum internalformat, GLsizei width,
+                                         GLsizei height, GLsizei depth) {
+    GLState.Lock();
+    TextureStorage3D_State(texture, levels, internalformat, width, height, depth);
+    GLState.Unlock();
+}
+
+// glTextureSubImage1D
+void TextureSubImage1D_State(GLuint texture, GLint level, GLint xoffset, GLsizei width, GLenum format, GLenum type,
+                             const void* pixels) {
+    LOG()
+    LOG_D("glTextureSubImage1D, texture: %u, level: %d, xoffset: %d, width: %d, format: %s, type: %s",
+          texture, level, xoffset, width, glEnumToString(format), glEnumToString(type))
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glTexSubImage2D(GL_TEXTURE_2D, level, xoffset, 0, width, 1, format, type, pixels);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTextureSubImage1D(GLuint texture, GLint level, GLint xoffset, GLsizei width, GLenum format,
+                                          GLenum type, const void* pixels) {
+    GLState.Lock();
+    TextureSubImage1D_State(texture, level, xoffset, width, format, type, pixels);
+    GLState.Unlock();
+}
+
+// glTextureSubImage2D
+void TextureSubImage2D_State(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height,
+                             GLenum format, GLenum type, const void* pixels) {
+    LOG()
+    LOG_D("glTextureSubImage2D, texture: %u, level: %d, xoffset: %d, yoffset: %d, width: %d, height: %d",
+          texture, level, xoffset, yoffset, width, height)
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glTexSubImage2D(GL_TEXTURE_2D, level, xoffset, yoffset, width, height, format, type, pixels);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTextureSubImage2D(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
+                                          GLsizei height, GLenum format, GLenum type, const void* pixels) {
+    GLState.Lock();
+    TextureSubImage2D_State(texture, level, xoffset, yoffset, width, height, format, type, pixels);
+    GLState.Unlock();
+}
+
+// glTextureSubImage3D
+void TextureSubImage3D_State(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width,
+                             GLsizei height, GLsizei depth, GLenum format, GLenum type, const void* pixels) {
+    LOG()
+    LOG_D("glTextureSubImage3D, texture: %u, level: %d, xoffset: %d, yoffset: %d, zoffset: %d, width: %d, height: %d, depth: %d",
+          texture, level, xoffset, yoffset, zoffset, width, height, depth)
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_3D, texture);
+    GLES.glTexSubImage3D(GL_TEXTURE_3D, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTextureSubImage3D(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+                                          GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type,
+                                          const void* pixels) {
+    GLState.Lock();
+    TextureSubImage3D_State(texture, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels);
+    GLState.Unlock();
+}
+
+// glTextureParameterf
+void TextureParameterf_State(GLuint texture, GLenum pname, GLfloat param) {
+    LOG()
+    LOG_D("glTextureParameterf, texture: %u, pname: %s, param: %f", texture, glEnumToString(pname), param)
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glTexParameterf(GL_TEXTURE_2D, pname, param);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTextureParameterf(GLuint texture, GLenum pname, GLfloat param) {
+    GLState.Lock();
+    TextureParameterf_State(texture, pname, param);
+    GLState.Unlock();
+}
+
+// glTextureParameteri
+void TextureParameteri_State(GLuint texture, GLenum pname, GLint param) {
+    LOG()
+    LOG_D("glTextureParameteri, texture: %u, pname: %s, param: %d", texture, glEnumToString(pname), param)
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glTexParameteri(GL_TEXTURE_2D, pname, param);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTextureParameteri(GLuint texture, GLenum pname, GLint param) {
+    GLState.Lock();
+    TextureParameteri_State(texture, pname, param);
+    GLState.Unlock();
+}
+
+// glTextureParameteriv
+void TextureParameteriv_State(GLuint texture, GLenum pname, const GLint* params) {
+    LOG()
+    LOG_D("glTextureParameteriv, texture: %u, pname: %s", texture, glEnumToString(pname))
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glTexParameteriv(GL_TEXTURE_2D, pname, params);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTextureParameteriv(GLuint texture, GLenum pname, const GLint* params) {
+    GLState.Lock();
+    TextureParameteriv_State(texture, pname, params);
+    GLState.Unlock();
+}
+
+// glTextureParameterfv
+void TextureParameterfv_State(GLuint texture, GLenum pname, const GLfloat* params) {
+    LOG()
+    LOG_D("glTextureParameterfv, texture: %u, pname: %s", texture, glEnumToString(pname))
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glTexParameterfv(GL_TEXTURE_2D, pname, params);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTextureParameterfv(GLuint texture, GLenum pname, const GLfloat* params) {
+    GLState.Lock();
+    TextureParameterfv_State(texture, pname, params);
+    GLState.Unlock();
+}
+
+// glTextureParameterIiv
+void TextureParameterIiv_State(GLuint texture, GLenum pname, const GLint* params) {
+    LOG()
+    LOG_D("glTextureParameterIiv, texture: %u, pname: %s", texture, glEnumToString(pname))
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glTexParameterIiv(GL_TEXTURE_2D, pname, params);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTextureParameterIiv(GLuint texture, GLenum pname, const GLint* params) {
+    GLState.Lock();
+    TextureParameterIiv_State(texture, pname, params);
+    GLState.Unlock();
+}
+
+// glTextureParameterIuiv
+void TextureParameterIuiv_State(GLuint texture, GLenum pname, const GLuint* params) {
+    LOG()
+    LOG_D("glTextureParameterIuiv, texture: %u, pname: %s", texture, glEnumToString(pname))
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glTexParameterIuiv(GL_TEXTURE_2D, pname, params);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTextureParameterIuiv(GLuint texture, GLenum pname, const GLuint* params) {
+    GLState.Lock();
+    TextureParameterIuiv_State(texture, pname, params);
+    GLState.Unlock();
+}
+
+// glGetTextureImage
+void GetTextureImage_State(GLuint texture, GLint level, GLenum format, GLenum type, GLsizei bufSize, void* pixels) {
+    LOG()
+    LOG_D("glGetTextureImage, texture: %u, level: %d, format: %s, type: %s, bufSize: %d",
+          texture, level, glEnumToString(format), glEnumToString(type), bufSize)
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    glGetTexImage(GL_TEXTURE_2D, level, format, type, pixels);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGetTextureImage(GLuint texture, GLint level, GLenum format, GLenum type, GLsizei bufSize,
+                                        void* pixels) {
+    GLState.Lock();
+    GetTextureImage_State(texture, level, format, type, bufSize, pixels);
+    GLState.Unlock();
+}
+
+// glGetTextureSubImage
+void GetTextureSubImage_State(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+                              GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type,
+                              GLsizei bufSize, void* pixels) {
+    LOG()
+    LOG_D("glGetTextureSubImage, texture: %u, level: %d, xoffset: %d, yoffset: %d, zoffset: %d, width: %d, height: %d, depth: %d",
+          texture, level, xoffset, yoffset, zoffset, width, height, depth)
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    // Use glReadPixels via FBO for sub-image readback
+    GLint prevDrawFBO = GLState.framebuffer.drawFBO;
+    GLint prevReadFBO = GLState.framebuffer.readFBO;
+    GLuint tempFBO = acquireTempFBO();
+    glBindFramebuffer(GL_FRAMEBUFFER, tempFBO);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, level);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        glReadPixels(xoffset, yoffset, width, height, format, type, pixels);
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, prevReadFBO);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDrawFBO);
+    releaseTempFBO(tempFBO);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGetTextureSubImage(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+                                           GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type,
+                                           GLsizei bufSize, void* pixels) {
+    GLState.Lock();
+    GetTextureSubImage_State(texture, level, xoffset, yoffset, zoffset, width, height, depth, format, type, bufSize, pixels);
+    GLState.Unlock();
+}
+
+// glGetTextureParameteriv
+void GetTextureParameteriv_State(GLuint texture, GLenum pname, GLint* params) {
+    LOG()
+    LOG_D("glGetTextureParameteriv, texture: %u, pname: %s", texture, glEnumToString(pname))
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glGetTexParameteriv(GL_TEXTURE_2D, pname, params);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGetTextureParameteriv(GLuint texture, GLenum pname, GLint* params) {
+    GLState.Lock();
+    GetTextureParameteriv_State(texture, pname, params);
+    GLState.Unlock();
+}
+
+// glGetTextureParameterfv
+void GetTextureParameterfv_State(GLuint texture, GLenum pname, GLfloat* params) {
+    LOG()
+    LOG_D("glGetTextureParameterfv, texture: %u, pname: %s", texture, glEnumToString(pname))
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glGetTexParameterfv(GL_TEXTURE_2D, pname, params);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGetTextureParameterfv(GLuint texture, GLenum pname, GLfloat* params) {
+    GLState.Lock();
+    GetTextureParameterfv_State(texture, pname, params);
+    GLState.Unlock();
+}
+
+// glGetTextureParameterIiv
+void GetTextureParameterIiv_State(GLuint texture, GLenum pname, GLint* params) {
+    LOG()
+    LOG_D("glGetTextureParameterIiv, texture: %u, pname: %s", texture, glEnumToString(pname))
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glGetTexParameterIiv(GL_TEXTURE_2D, pname, params);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGetTextureParameterIiv(GLuint texture, GLenum pname, GLint* params) {
+    GLState.Lock();
+    GetTextureParameterIiv_State(texture, pname, params);
+    GLState.Unlock();
+}
+
+// glGetTextureParameterIuiv
+void GetTextureParameterIuiv_State(GLuint texture, GLenum pname, GLuint* params) {
+    LOG()
+    LOG_D("glGetTextureParameterIuiv, texture: %u, pname: %s", texture, glEnumToString(pname))
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glGetTexParameterIuiv(GL_TEXTURE_2D, pname, params);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGetTextureParameterIuiv(GLuint texture, GLenum pname, GLuint* params) {
+    GLState.Lock();
+    GetTextureParameterIuiv_State(texture, pname, params);
+    GLState.Unlock();
+}
+
+// glGetTextureLevelParameteriv
+void GetTextureLevelParameteriv_State(GLuint texture, GLint level, GLenum pname, GLint* params) {
+    LOG()
+    LOG_D("glGetTextureLevelParameteriv, texture: %u, level: %d, pname: %s", texture, level, glEnumToString(pname))
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glGetTexLevelParameteriv(GL_TEXTURE_2D, level, pname, params);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGetTextureLevelParameteriv(GLuint texture, GLint level, GLenum pname, GLint* params) {
+    GLState.Lock();
+    GetTextureLevelParameteriv_State(texture, level, pname, params);
+    GLState.Unlock();
+}
+
+// glGetTextureLevelParameterfv
+void GetTextureLevelParameterfv_State(GLuint texture, GLint level, GLenum pname, GLfloat* params) {
+    LOG()
+    LOG_D("glGetTextureLevelParameterfv, texture: %u, level: %d, pname: %s", texture, level, glEnumToString(pname))
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glGetTexLevelParameterfv(GL_TEXTURE_2D, level, pname, params);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glGetTextureLevelParameterfv(GLuint texture, GLint level, GLenum pname, GLfloat* params) {
+    GLState.Lock();
+    GetTextureLevelParameterfv_State(texture, level, pname, params);
+    GLState.Unlock();
+}
+
+// glTextureStorage2DMultisample
+void TextureStorage2DMultisample_State(GLuint texture, GLsizei samples, GLenum internalformat, GLsizei width,
+                                       GLsizei height, GLboolean fixedsamplelocations) {
+    LOG()
+    LOG_D("glTextureStorage2DMultisample, texture: %u, samples: %d, internalformat: %s, width: %d, height: %d",
+          texture, samples, glEnumToString(internalformat), width, height)
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    GLES.glTexStorage2DMultisample(GL_TEXTURE_2D, samples, internalformat, width, height, fixedsamplelocations);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTextureStorage2DMultisample(GLuint texture, GLsizei samples, GLenum internalformat,
+                                                    GLsizei width, GLsizei height, GLboolean fixedsamplelocations) {
+    GLState.Lock();
+    TextureStorage2DMultisample_State(texture, samples, internalformat, width, height, fixedsamplelocations);
+    GLState.Unlock();
+}
+
+// glTextureStorage3DMultisample
+void TextureStorage3DMultisample_State(GLuint texture, GLsizei samples, GLenum internalformat, GLsizei width,
+                                       GLsizei height, GLsizei depth, GLboolean fixedsamplelocations) {
+    LOG()
+    LOG_D("glTextureStorage3DMultisample, texture: %u, samples: %d, internalformat: %s, width: %d, height: %d, depth: %d",
+          texture, samples, glEnumToString(internalformat), width, height, depth)
+    GLint prevTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+    GLES.glBindTexture(GL_TEXTURE_3D, texture);
+    GLES.glTexStorage3DMultisample(GL_TEXTURE_3D, samples, internalformat, width, height, depth, fixedsamplelocations);
+    if (prevTex != (GLint)texture) {
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTex);
+    }
+    CHECK_GL_ERROR
+}
+
+GLAPI GLAPIENTRY void glTextureStorage3DMultisample(GLuint texture, GLsizei samples, GLenum internalformat,
+                                                    GLsizei width, GLsizei height, GLsizei depth,
+                                                    GLboolean fixedsamplelocations) {
+    GLState.Lock();
+    TextureStorage3DMultisample_State(texture, samples, internalformat, width, height, depth, fixedsamplelocations);
+    GLState.Unlock();
+}
