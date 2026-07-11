@@ -1,9 +1,8 @@
 // MobileGlues - gl/backend/Init.cpp
 // Backend initialization entry point
 //
-// Architecture: "CPU-GPU 平权共生 Context"
-//   CPU和GPU在GLContext中完全平等。Initialize()必须同时接收两者，
-//   Shutdown()同时释放两者。不存在"先GPU后CPU"或"GPU优先CPU附属"的模式。
+// Architecture: "CPU-GPU 共生 Context — GPU主导"
+//   GPU后端优先创建，通过SetBackend注入Context，CPU状态随之绑定。
 //   全局pActiveBackendObject保留为向后兼容的非拥有引用。
 //
 // Copyright (c) 2025-2026 MobileGL-Dev
@@ -31,10 +30,16 @@ EGLFunctionsTable g_EGLFuncs = {};
 GLESFunctionsTable g_GLESFuncs = {};
 GLESCapabilities g_GLESCapabilities = {};
 
-// Helper: 从平权共生Context获取后端
+// Helper: 从共生Context获取后端
 static MG_Backend::BackendObject* GetActiveBackend() {
     auto& ctx = MG_State::GLState::GLContext::Get();
     return ctx.GetBackend();
+}
+
+// Helper: GPU优先——创建后端并注入Context
+static void SetActiveBackend(UniquePtr<MG_Backend::BackendObject> backend) {
+    auto& ctx = MG_State::GLState::GLContext::Get();
+    ctx.SetBackend(std::move(backend));
 }
 
 // Backend object registry instances
@@ -82,21 +87,24 @@ StateBackendObjectRegistry<MG_State::GLState::RenderbufferObject, BackendRenderb
 }
 
 // =============================================================================
-// 平权共生初始化：CPU和GPU同时创建，缺一不可
+// GPU优先初始化：GPU后端先创建，CPU状态随之绑定
 // =============================================================================
 
 Bool InitWindowSurface(NativeWindowType window) {
-    auto& ctx = MG_State::GLState::GLContext::Get();
+    // GPU优先：先创建后端
+    auto* backend = GetActiveBackend();
+    if (!backend) {
+        auto newBackend = UniquePtr<BackendObject_DirectGLES>(new BackendObject_DirectGLES());
+        newBackend->Initialize();
+        backend = newBackend.get();
+        SetActiveBackend(std::move(newBackend));
 
-    // 如果尚未初始化，CPU和GPU同时创建
-    if (!ctx.IsInitialized()) {
-        auto backend = UniquePtr<BackendObject_DirectGLES>(new BackendObject_DirectGLES());
-        // Initialize() 同时初始化CPU状态和GPU后端——两者平权，不可分离
-        ctx.Initialize(std::move(backend));
+        // CPU状态随后绑定
+        auto& ctx = MG_State::GLState::GLContext::Get();
+        if (!ctx.IsInitialized()) {
+            ctx.Initialize();
+        }
     }
-
-    auto* backend = ctx.GetBackend();
-    if (!backend) return false;
 
     // 向后兼容：更新全局引用（非拥有）
     MG_Backend::pActiveBackendObject.reset(backend);
@@ -112,15 +120,18 @@ Bool InitWindowSurface(NativeWindowType window) {
 }
 
 Bool InitPbufferSurface(EGLint width, EGLint height) {
-    auto& ctx = MG_State::GLState::GLContext::Get();
+    auto* backend = GetActiveBackend();
+    if (!backend) {
+        auto newBackend = UniquePtr<BackendObject_DirectGLES>(new BackendObject_DirectGLES());
+        newBackend->Initialize();
+        backend = newBackend.get();
+        SetActiveBackend(std::move(newBackend));
 
-    if (!ctx.IsInitialized()) {
-        auto backend = UniquePtr<BackendObject_DirectGLES>(new BackendObject_DirectGLES());
-        ctx.Initialize(std::move(backend));
+        auto& ctx = MG_State::GLState::GLContext::Get();
+        if (!ctx.IsInitialized()) {
+            ctx.Initialize();
+        }
     }
-
-    auto* backend = ctx.GetBackend();
-    if (!backend) return false;
 
     MG_Backend::pActiveBackendObject.reset(backend);
     return backend->InitPbufferSurface(width, height);
@@ -150,11 +161,8 @@ void SetGLESFuncsTable(const GLESFunctionsTable& glesFuncs) { g_GLESFuncs = gles
 void SetGLESCapabilities(const GLESCapabilities& capabilities) { g_GLESCapabilities = capabilities; }
 
 void DestroyEGLContext() {
-    // 平权共生销毁：CPU和GPU同时释放
     auto& ctx = MG_State::GLState::GLContext::Get();
     ctx.Shutdown();
-
-    // 清除向后兼容的全局引用
     MG_Backend::pActiveBackendObject.release();
 }
 

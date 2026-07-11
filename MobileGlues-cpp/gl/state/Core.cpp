@@ -61,51 +61,47 @@ GLContext::~GLContext()
 }
 
 // =============================================================================
-// Initialize: CPU + GPU 平权共生，同时创建，缺一不可
+// Initialize: CPU状态初始化（GPU后端通过SetBackend单独注入）
 // =============================================================================
 
-void GLContext::Initialize(UniquePtr<MG_Backend::BackendObject> backend)
+void GLContext::Initialize()
 {
-    // 两者必须同时提供
-    if (!backend) {
-        // 拒绝只初始化一半——CPU和GPU不可分离
-        return;
-    }
     if (m_initialized) return;
-
-    // 同时初始化——不区分先后，CPU和GPU平权
-    // Step A: CPU侧状态初始化
     m_stateManager.Initialize();
-
-    // Step B: GPU侧后端接管（同时进行，非先后顺序）
-    m_backend = std::move(backend);
-    m_backend->Initialize();
-
     m_initialized = true;
 }
 
 // =============================================================================
-// Shutdown: CPU + GPU 平权共生，同时销毁，不可单独释放
+// Shutdown: CPU状态和GPU后端同时释放
 // =============================================================================
 
 void GLContext::Shutdown()
 {
     if (!m_initialized) return;
 
-    // 同时释放——不区分先后，CPU和GPU平权
-    // Step A: GPU资源释放
-    m_backend->ReleaseEGLResources();
-    m_backend.reset();
+    if (m_backend) {
+        m_backend->ReleaseEGLResources();
+        m_backend.reset();
+    }
 
-    // Step B: EGL句柄清零
     m_eglDisplay = EGL_NO_DISPLAY;
     m_eglContext = EGL_NO_CONTEXT;
     m_eglSurface = EGL_NO_SURFACE;
 
-    // Step C: CPU状态清理
     m_stateManager.Shutdown();
-
     m_initialized = false;
+}
+
+// =============================================================================
+// GPU Backend Binding: GPU优先，注入到Context
+// =============================================================================
+
+void GLContext::SetBackend(UniquePtr<MG_Backend::BackendObject> backend)
+{
+    if (m_backend) {
+        m_backend->ReleaseEGLResources();
+    }
+    m_backend = std::move(backend);
 }
 
 // =============================================================================

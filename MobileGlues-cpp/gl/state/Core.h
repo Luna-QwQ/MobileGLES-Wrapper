@@ -42,14 +42,12 @@ class RenderbufferObject;
 using VersionType = Uint16;
 
 // =============================================================================
-// CPU-GPU Symbiotic Context
+// CPU-GPU Symbiotic Context — GPU主导，CPU绑定
 //
-// GLContext is NOT a container where GPU is "set" onto CPU. Rather, CPU and GPU
-// are equal partners created together in one atomic operation. Neither can
-// exist without the other — no CPU-only, no GPU-only. They are born together,
-// live together, and die together.
-//
-// GLContext = CPU (GLStateManager) + GPU (BackendObject + EGL handles)
+// GLContext将CPU状态跟踪和GPU后端资源绑定为一体：
+//   - GPU优先：GPU后端先创建，CPU状态随后绑定，二者共生
+//   - 通过SetBackend()将GPU后端注入Context，CPU状态随之初始化
+//   - 共同存活，共同销毁
 // =============================================================================
 
 class GLContext {
@@ -58,37 +56,39 @@ public:
     ~GLContext();
 
     // -------------------------------------------------------------------------
-    // Lifecycle: CPU + GPU created together in one atomic operation
+    // Lifecycle: GPU主导，CPU跟随绑定
     // -------------------------------------------------------------------------
 
-    /// Initialize both CPU and GPU in one atomic step.
-    /// @param backend  The GPU backend — ownership is transferred to the Context.
-    ///                 Must not be null. Both CPU and GPU are initialized
-    ///                 together; neither can exist without the other.
-    void Initialize(UniquePtr<MG_Backend::BackendObject> backend);
+    /// 初始化CPU状态。GPU后端通过SetBackend()单独注入。
+    void Initialize();
 
-    /// Shutdown both CPU and GPU together.
-    /// All CPU state is cleared and all GPU resources are released.
+    /// 关闭CPU状态和GPU后端——两者同时释放。
     void Shutdown();
 
-    /// Returns true only when BOTH CPU and GPU are initialized.
-    /// There is no "half-initialized" state.
+    /// 返回true当CPU和GPU都已初始化。
     Bool IsInitialized() const { return m_initialized; }
 
     // -------------------------------------------------------------------------
-    // GPU Backend (symbiotic partner — equal to CPU)
+    // GPU Backend（GPU优先：通过SetBackend注入，Context接管所有权）
     // -------------------------------------------------------------------------
 
     MG_Backend::BackendObject* GetBackend() { return m_backend.get(); }
     const MG_Backend::BackendObject* GetBackend() const { return m_backend.get(); }
 
+    /// 将GPU后端绑定到Context——Context接管所有权。
+    void SetBackend(UniquePtr<MG_Backend::BackendObject> backend);
+
     // -------------------------------------------------------------------------
-    // EGL Resource Access (synced from backend, convenience accessors)
+    // EGL Resource Access
     // -------------------------------------------------------------------------
 
     EGLDisplay GetEGLDisplay() const { return m_eglDisplay; }
     EGLContext GetEGLContext() const { return m_eglContext; }
     EGLSurface GetEGLSurface() const { return m_eglSurface; }
+
+    void SetEGLDisplay(EGLDisplay dpy) { m_eglDisplay = dpy; }
+    void SetEGLContext(EGLContext ctx) { m_eglContext = ctx; }
+    void SetEGLSurface(EGLSurface surf) { m_eglSurface = surf; }
 
     // -------------------------------------------------------------------------
     // Active Context (thread-local or global fallback)
