@@ -1,5 +1,11 @@
 // MobileGlues - gl/backend/Init.cpp
 // Backend initialization entry point
+//
+// Architecture: "CPU-GPU Symbiotic Context"
+//   The backend is now owned by GLContext (the unified CPU+GPU context).
+//   Global pActiveBackendObject is replaced by GLContext::Get().GetBackend().
+//   This ensures the backend lives and dies with the Context.
+//
 // Architecture inspired by MobileGL-DirectGLES
 //
 // Copyright (c) 2025-2026 MobileGL-Dev
@@ -11,9 +17,11 @@
 #include "BackendObject.h"
 #include "DirectGLES/DirectGLES.h"
 #include "DirectGLES/BackendObject_DirectGLES.h"
+#include "../state/Core.h"
 
 namespace MobileGL::MG_Backend {
 
+// Legacy global: kept for backward compatibility, but prefer GLContext::Get().GetBackend()
 GlobalBackendFunctionsTable gBackendFunctionsTable = {};
 UniquePtr<BackendObject> pActiveBackendObject = nullptr;
 
@@ -24,6 +32,18 @@ namespace MobileGL::backend::DirectGLES {
 EGLFunctionsTable g_EGLFuncs = {};
 GLESFunctionsTable g_GLESFuncs = {};
 GLESCapabilities g_GLESCapabilities = {};
+
+// Helper: get the active backend from the symbiotic CPU+GPU Context
+static MG_Backend::BackendObject* GetActiveBackend() {
+    auto& ctx = MG_State::GLState::GLContext::Get();
+    return ctx.GetBackend();
+}
+
+// Helper: set the active backend into the symbiotic CPU+GPU Context
+static void SetActiveBackend(UniquePtr<MG_Backend::BackendObject> backend) {
+    auto& ctx = MG_State::GLState::GLContext::Get();
+    ctx.SetBackend(std::move(backend));
+}
 
 // Backend object registry instances
 namespace BufferImpl {
@@ -69,44 +89,73 @@ StateBackendObjectRegistry<MG_State::GLState::RenderbufferObject, BackendRenderb
     g_backendRenderbufferObjects;
 }
 
-// Initialize backend
+// =============================================================================
+// Initialize backend through the symbiotic CPU+GPU Context
+// =============================================================================
+
 Bool InitWindowSurface(NativeWindowType window) {
-    if (!MG_Backend::pActiveBackendObject) {
-        MG_Backend::pActiveBackendObject = UniquePtr<BackendObject_DirectGLES>(new BackendObject_DirectGLES());
-        MG_Backend::pActiveBackendObject->Initialize();
+    // Get or create the backend through the unified Context
+    auto* backend = GetActiveBackend();
+    if (!backend) {
+        auto newBackend = UniquePtr<BackendObject_DirectGLES>(new BackendObject_DirectGLES());
+        newBackend->Initialize();
+        backend = newBackend.get();
+        SetActiveBackend(std::move(newBackend));
+
+        // Also initialize the CPU-side state manager (symbiotic partner)
+        auto& ctx = MG_State::GLState::GLContext::Get();
+        if (!ctx.IsInitialized()) {
+            ctx.Initialize();
+        }
     }
 
-    MG_Backend::pActiveBackendObject->SetWindowHandle(
+    // Also update legacy global for backward compatibility
+    MG_Backend::pActiveBackendObject.reset(backend); // non-owning, managed by Context
+
+    backend->SetWindowHandle(
         MG_Backend::WindowHandle{
             .Backend = MG_Backend::WindowBackend::Android,
             .Handle = window,
             .Width = 0,
             .Height = 0
         });
-    return MG_Backend::pActiveBackendObject->InitWindowSurface();
+    return backend->InitWindowSurface();
 }
 
 Bool InitPbufferSurface(EGLint width, EGLint height) {
-    if (!MG_Backend::pActiveBackendObject) {
-        MG_Backend::pActiveBackendObject = UniquePtr<BackendObject_DirectGLES>(new BackendObject_DirectGLES());
-        MG_Backend::pActiveBackendObject->Initialize();
+    auto* backend = GetActiveBackend();
+    if (!backend) {
+        auto newBackend = UniquePtr<BackendObject_DirectGLES>(new BackendObject_DirectGLES());
+        newBackend->Initialize();
+        backend = newBackend.get();
+        SetActiveBackend(std::move(newBackend));
+
+        auto& ctx = MG_State::GLState::GLContext::Get();
+        if (!ctx.IsInitialized()) {
+            ctx.Initialize();
+        }
     }
-    return MG_Backend::pActiveBackendObject->InitPbufferSurface(width, height);
+
+    MG_Backend::pActiveBackendObject.reset(backend);
+    return backend->InitPbufferSurface(width, height);
 }
 
 Bool MakeCurrent() {
-    if (!MG_Backend::pActiveBackendObject) return false;
-    return MG_Backend::pActiveBackendObject->MakeEGLCurrent(m_eglDisplay, m_eglSurface, m_eglSurface, m_eglContext);
+    auto* backend = GetActiveBackend();
+    if (!backend) return false;
+    return backend->MakeEGLCurrent(m_eglDisplay, m_eglSurface, m_eglSurface, m_eglContext);
 }
 
 Bool ReleaseCurrent() {
-    if (!MG_Backend::pActiveBackendObject) return false;
-    return MG_Backend::pActiveBackendObject->MakeEGLCurrent(EGL_NO_DISPLAY, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    auto* backend = GetActiveBackend();
+    if (!backend) return false;
+    return backend->MakeEGLCurrent(EGL_NO_DISPLAY, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 }
 
 void Present() {
-    if (MG_Backend::pActiveBackendObject) {
-        MG_Backend::pActiveBackendObject->SwapEGLBuffers(m_eglDisplay, m_eglSurface);
+    auto* backend = GetActiveBackend();
+    if (backend) {
+        backend->SwapEGLBuffers(m_eglDisplay, m_eglSurface);
     }
 }
 
@@ -115,10 +164,13 @@ void SetGLESFuncsTable(const GLESFunctionsTable& glesFuncs) { g_GLESFuncs = gles
 void SetGLESCapabilities(const GLESCapabilities& capabilities) { g_GLESCapabilities = capabilities; }
 
 void DestroyEGLContext() {
-    if (MG_Backend::pActiveBackendObject) {
-        MG_Backend::pActiveBackendObject->ReleaseEGLResources();
-        MG_Backend::pActiveBackendObject.reset();
+    // Release GPU resources through the symbiotic Context
+    auto& ctx = MG_State::GLState::GLContext::Get();
+    if (ctx.GetBackend()) {
+        ctx.GetBackend()->ReleaseEGLResources();
     }
+    // Clear legacy global reference
+    MG_Backend::pActiveBackendObject.release();
 }
 
 } // namespace MobileGL::backend::DirectGLES
