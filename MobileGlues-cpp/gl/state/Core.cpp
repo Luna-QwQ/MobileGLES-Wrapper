@@ -61,59 +61,51 @@ GLContext::~GLContext()
 }
 
 // =============================================================================
-// Initialize: bind CPU state + GPU backend together (symbiotic creation)
+// Initialize: CPU + GPU 平权共生，同时创建，缺一不可
 // =============================================================================
 
-void GLContext::Initialize()
+void GLContext::Initialize(UniquePtr<MG_Backend::BackendObject> backend)
 {
+    // 两者必须同时提供
+    if (!backend) {
+        // 拒绝只初始化一半——CPU和GPU不可分离
+        return;
+    }
     if (m_initialized) return;
 
-    // Step 1: Initialize CPU-side state tracking
+    // 同时初始化——不区分先后，CPU和GPU平权
+    // Step A: CPU侧状态初始化
     m_stateManager.Initialize();
 
-    // Step 2: GPU backend is expected to be set via SetBackend() before
-    //         or during initialization. If not set, the context is CPU-only
-    //         (e.g., for headless/offline state tracking).
+    // Step B: GPU侧后端接管（同时进行，非先后顺序）
+    m_backend = std::move(backend);
+    m_backend->Initialize();
 
     m_initialized = true;
 }
 
 // =============================================================================
-// Shutdown: release both CPU state and GPU backend together (symbiotic death)
+// Shutdown: CPU + GPU 平权共生，同时销毁，不可单独释放
 // =============================================================================
 
 void GLContext::Shutdown()
 {
     if (!m_initialized) return;
 
-    // Step 1: Release GPU backend resources first
-    if (m_backend) {
-        m_backend->ReleaseEGLResources();
-        m_backend.reset();
-    }
+    // 同时释放——不区分先后，CPU和GPU平权
+    // Step A: GPU资源释放
+    m_backend->ReleaseEGLResources();
+    m_backend.reset();
 
-    // Step 2: Clear EGL handles (GPU resources)
+    // Step B: EGL句柄清零
     m_eglDisplay = EGL_NO_DISPLAY;
     m_eglContext = EGL_NO_CONTEXT;
     m_eglSurface = EGL_NO_SURFACE;
 
-    // Step 3: Shutdown CPU-side state tracking last
+    // Step C: CPU状态清理
     m_stateManager.Shutdown();
 
     m_initialized = false;
-}
-
-// =============================================================================
-// GPU Backend Binding
-// =============================================================================
-
-void GLContext::SetBackend(UniquePtr<MG_Backend::BackendObject> backend)
-{
-    // If there's an existing backend, release its GPU resources
-    if (m_backend) {
-        m_backend->ReleaseEGLResources();
-    }
-    m_backend = std::move(backend);
 }
 
 // =============================================================================

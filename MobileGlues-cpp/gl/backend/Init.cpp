@@ -1,12 +1,10 @@
 // MobileGlues - gl/backend/Init.cpp
 // Backend initialization entry point
 //
-// Architecture: "CPU-GPU Symbiotic Context"
-//   The backend is now owned by GLContext (the unified CPU+GPU context).
-//   Global pActiveBackendObject is replaced by GLContext::Get().GetBackend().
-//   This ensures the backend lives and dies with the Context.
-//
-// Architecture inspired by MobileGL-DirectGLES
+// Architecture: "CPU-GPU 平权共生 Context"
+//   CPU和GPU在GLContext中完全平等。Initialize()必须同时接收两者，
+//   Shutdown()同时释放两者。不存在"先GPU后CPU"或"GPU优先CPU附属"的模式。
+//   全局pActiveBackendObject保留为向后兼容的非拥有引用。
 //
 // Copyright (c) 2025-2026 MobileGL-Dev
 // Licensed under the GNU Lesser General Public License v2.1:
@@ -21,7 +19,7 @@
 
 namespace MobileGL::MG_Backend {
 
-// Legacy global: kept for backward compatibility, but prefer GLContext::Get().GetBackend()
+// Legacy global: 向后兼容的非拥有引用，实际所有权在GLContext中
 GlobalBackendFunctionsTable gBackendFunctionsTable = {};
 UniquePtr<BackendObject> pActiveBackendObject = nullptr;
 
@@ -33,16 +31,10 @@ EGLFunctionsTable g_EGLFuncs = {};
 GLESFunctionsTable g_GLESFuncs = {};
 GLESCapabilities g_GLESCapabilities = {};
 
-// Helper: get the active backend from the symbiotic CPU+GPU Context
+// Helper: 从平权共生Context获取后端
 static MG_Backend::BackendObject* GetActiveBackend() {
     auto& ctx = MG_State::GLState::GLContext::Get();
     return ctx.GetBackend();
-}
-
-// Helper: set the active backend into the symbiotic CPU+GPU Context
-static void SetActiveBackend(UniquePtr<MG_Backend::BackendObject> backend) {
-    auto& ctx = MG_State::GLState::GLContext::Get();
-    ctx.SetBackend(std::move(backend));
 }
 
 // Backend object registry instances
@@ -90,27 +82,24 @@ StateBackendObjectRegistry<MG_State::GLState::RenderbufferObject, BackendRenderb
 }
 
 // =============================================================================
-// Initialize backend through the symbiotic CPU+GPU Context
+// 平权共生初始化：CPU和GPU同时创建，缺一不可
 // =============================================================================
 
 Bool InitWindowSurface(NativeWindowType window) {
-    // Get or create the backend through the unified Context
-    auto* backend = GetActiveBackend();
-    if (!backend) {
-        auto newBackend = UniquePtr<BackendObject_DirectGLES>(new BackendObject_DirectGLES());
-        newBackend->Initialize();
-        backend = newBackend.get();
-        SetActiveBackend(std::move(newBackend));
+    auto& ctx = MG_State::GLState::GLContext::Get();
 
-        // Also initialize the CPU-side state manager (symbiotic partner)
-        auto& ctx = MG_State::GLState::GLContext::Get();
-        if (!ctx.IsInitialized()) {
-            ctx.Initialize();
-        }
+    // 如果尚未初始化，CPU和GPU同时创建
+    if (!ctx.IsInitialized()) {
+        auto backend = UniquePtr<BackendObject_DirectGLES>(new BackendObject_DirectGLES());
+        // Initialize() 同时初始化CPU状态和GPU后端——两者平权，不可分离
+        ctx.Initialize(std::move(backend));
     }
 
-    // Also update legacy global for backward compatibility
-    MG_Backend::pActiveBackendObject.reset(backend); // non-owning, managed by Context
+    auto* backend = ctx.GetBackend();
+    if (!backend) return false;
+
+    // 向后兼容：更新全局引用（非拥有）
+    MG_Backend::pActiveBackendObject.reset(backend);
 
     backend->SetWindowHandle(
         MG_Backend::WindowHandle{
@@ -123,18 +112,15 @@ Bool InitWindowSurface(NativeWindowType window) {
 }
 
 Bool InitPbufferSurface(EGLint width, EGLint height) {
-    auto* backend = GetActiveBackend();
-    if (!backend) {
-        auto newBackend = UniquePtr<BackendObject_DirectGLES>(new BackendObject_DirectGLES());
-        newBackend->Initialize();
-        backend = newBackend.get();
-        SetActiveBackend(std::move(newBackend));
+    auto& ctx = MG_State::GLState::GLContext::Get();
 
-        auto& ctx = MG_State::GLState::GLContext::Get();
-        if (!ctx.IsInitialized()) {
-            ctx.Initialize();
-        }
+    if (!ctx.IsInitialized()) {
+        auto backend = UniquePtr<BackendObject_DirectGLES>(new BackendObject_DirectGLES());
+        ctx.Initialize(std::move(backend));
     }
+
+    auto* backend = ctx.GetBackend();
+    if (!backend) return false;
 
     MG_Backend::pActiveBackendObject.reset(backend);
     return backend->InitPbufferSurface(width, height);
@@ -164,12 +150,11 @@ void SetGLESFuncsTable(const GLESFunctionsTable& glesFuncs) { g_GLESFuncs = gles
 void SetGLESCapabilities(const GLESCapabilities& capabilities) { g_GLESCapabilities = capabilities; }
 
 void DestroyEGLContext() {
-    // Release GPU resources through the symbiotic Context
+    // 平权共生销毁：CPU和GPU同时释放
     auto& ctx = MG_State::GLState::GLContext::Get();
-    if (ctx.GetBackend()) {
-        ctx.GetBackend()->ReleaseEGLResources();
-    }
-    // Clear legacy global reference
+    ctx.Shutdown();
+
+    // 清除向后兼容的全局引用
     MG_Backend::pActiveBackendObject.release();
 }
 
