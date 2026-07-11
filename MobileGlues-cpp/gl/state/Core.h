@@ -19,7 +19,7 @@
 #pragma once
 
 #include "../../includes.h"
-#include "../../state.h"
+#include "../state.h"
 #include <EGL/egl.h>
 
 namespace MobileGL::MG_Backend {
@@ -44,10 +44,12 @@ using VersionType = Uint16;
 // =============================================================================
 // CPU-GPU Symbiotic Context
 //
-// GLContext is the single unified context that binds CPU-side state tracking
-// (GLStateManager) and GPU-side backend resources (BackendObject + EGL handles)
-// into one inseparable entity. They are created together, live together, and
-// destroyed together — a true symbiotic relationship.
+// GLContext is NOT a container where GPU is "set" onto CPU. Rather, CPU and GPU
+// are equal partners created together in one atomic operation. Neither can
+// exist without the other — no CPU-only, no GPU-only. They are born together,
+// live together, and die together.
+//
+// GLContext = CPU (GLStateManager) + GPU (BackendObject + EGL handles)
 // =============================================================================
 
 class GLContext {
@@ -56,42 +58,37 @@ public:
     ~GLContext();
 
     // -------------------------------------------------------------------------
-    // Lifecycle: CPU + GPU bound together
+    // Lifecycle: CPU + GPU created together in one atomic operation
     // -------------------------------------------------------------------------
 
-    /// Initialize both CPU state manager and GPU backend.
-    /// After this call, both CPU and GPU resources are live and bound.
-    void Initialize();
+    /// Initialize both CPU and GPU in one atomic step.
+    /// @param backend  The GPU backend — ownership is transferred to the Context.
+    ///                 Must not be null. Both CPU and GPU are initialized
+    ///                 together; neither can exist without the other.
+    void Initialize(UniquePtr<MG_Backend::BackendObject> backend);
 
-    /// Shutdown both CPU state and GPU backend.
+    /// Shutdown both CPU and GPU together.
     /// All CPU state is cleared and all GPU resources are released.
     void Shutdown();
 
-    /// Returns true if both CPU and GPU are initialized.
+    /// Returns true only when BOTH CPU and GPU are initialized.
+    /// There is no "half-initialized" state.
     Bool IsInitialized() const { return m_initialized; }
 
     // -------------------------------------------------------------------------
-    // GPU Backend Access (symbiotic: GPU lives with this Context)
+    // GPU Backend (symbiotic partner — equal to CPU)
     // -------------------------------------------------------------------------
 
     MG_Backend::BackendObject* GetBackend() { return m_backend.get(); }
     const MG_Backend::BackendObject* GetBackend() const { return m_backend.get(); }
 
-    /// Set the GPU backend — binds GPU to this Context.
-    /// The Context takes ownership of the backend.
-    void SetBackend(UniquePtr<MG_Backend::BackendObject> backend);
-
     // -------------------------------------------------------------------------
-    // EGL Resource Access (GPU handles live with this Context)
+    // EGL Resource Access (synced from backend, convenience accessors)
     // -------------------------------------------------------------------------
 
     EGLDisplay GetEGLDisplay() const { return m_eglDisplay; }
     EGLContext GetEGLContext() const { return m_eglContext; }
     EGLSurface GetEGLSurface() const { return m_eglSurface; }
-
-    void SetEGLDisplay(EGLDisplay dpy) { m_eglDisplay = dpy; }
-    void SetEGLContext(EGLContext ctx) { m_eglContext = ctx; }
-    void SetEGLSurface(EGLSurface surf) { m_eglSurface = surf; }
 
     // -------------------------------------------------------------------------
     // Active Context (thread-local or global fallback)
