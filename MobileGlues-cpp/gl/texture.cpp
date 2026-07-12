@@ -696,6 +696,32 @@ struct ScopedPackTight {
 
 static const void* swizzle_pixels_for_unpack(GLenum internalFormat, GLenum& format, GLenum& type,
                                               const void* pixels, GLsizei width, GLsizei height, GLsizei depth) {
+    // PBO-bound path: when a GL_PIXEL_UNPACK_BUFFER is bound, `pixels` is a
+    // byte offset into that PBO, NOT a real CPU pointer. We cannot do any
+    // CPU-side swizzle (the data lives in GPU memory). Normalise the
+    // format/type to GLES-friendly values so GLES can read from the PBO
+    // directly, and return the offset unchanged.
+    //
+    // CRITICAL: if we treated the offset as a pointer and dereferenced it
+    // (memcpy/ProcessColorSwizzle), we would either segfault or read garbage
+    // memory, then pass the garbage to GLES while the PBO is still bound -
+    // GLES would interpret the garbage pointer as a PBO offset and read
+    // completely wrong data, resulting in a black texture.
+    //
+    // Limitation: if the PBO data is actually laid out as BGRA, the texture
+    // will have red/blue swapped (a colour error, not a black screen) because
+    // GLES cannot natively read GL_BGRA. A full fix would require reading the
+    // PBO back to CPU memory, swizzling, and re-uploading - that is not done
+    // here.
+    const GLuint boundUnpackPBO = find_bound_buffer(GL_PIXEL_UNPACK_BUFFER_BINDING);
+    if (boundUnpackPBO != 0) {
+        if (type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV) {
+            type = GL_UNSIGNED_BYTE;
+        }
+        if (format == GL_BGRA) format = GL_RGBA;
+        return pixels;
+    }
+
     if (!pixels) return nullptr;
 
     // Only handle the RGBA8 family for now; other internal formats are passed
