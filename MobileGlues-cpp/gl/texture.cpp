@@ -694,33 +694,156 @@ struct ScopedPackTight {
     }
 };
 
+// RAII helper: restores the GL_PIXEL_UNPACK_BUFFER binding after
+// swizzle_pixels_for_unpack() temporarily unbinds it so that GLES reads from
+// a CPU pointer instead of a PBO offset. The caller sets pboToRestore to the
+// PBO id that was unbound; the destructor rebinds it.
+struct ScopedPboRestore {
+    GLuint pboToRestore = 0;
+    ~ScopedPboRestore() {
+        if (pboToRestore != 0) {
+            GLES.glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pboToRestore);
+            set_bound_buffer_by_target(GL_PIXEL_UNPACK_BUFFER, pboToRestore);
+        }
+    }
+};
+
 static const void* swizzle_pixels_for_unpack(GLenum internalFormat, GLenum& format, GLenum& type,
-                                              const void* pixels, GLsizei width, GLsizei height, GLsizei depth) {
+                                              const void* pixels, GLsizei width, GLsizei height, GLsizei depth,
+                                              GLuint* outPboToRestore) {
+    if (outPboToRestore) *outPboToRestore = 0;
     // PBO-bound path: when a GL_PIXEL_UNPACK_BUFFER is bound, `pixels` is a
-    // byte offset into that PBO, NOT a real CPU pointer. We cannot do any
-    // CPU-side swizzle (the data lives in GPU memory). Normalise the
-    // format/type to GLES-friendly values so GLES can read from the PBO
-    // directly, and return the offset unchanged.
+    // byte offset into that PBO, NOT a real CPU pointer. To do CPU-side
+    // swizzle we first map the PBO for reading, copy+swizzle the relevant
+    // region into a tight buffer, unmap, temporarily unbind the PBO so GLES
+    // reads from the CPU pointer, then restore the PBO binding.
     //
-    // CRITICAL: if we treated the offset as a pointer and dereferenced it
-    // (memcpy/ProcessColorSwizzle), we would either segfault or read garbage
-    // memory, then pass the garbage to GLES while the PBO is still bound -
-    // GLES would interpret the garbage pointer as a PBO offset and read
-    // completely wrong data, resulting in a black texture.
+    // This mirrors the MobileGL-DirectGLES reference design, which keeps a
+    // CPU shadow copy of every PBO and converts `pixels` into a real CPU
+    // pointer before running the standard swizzle pipeline. Without a full
+    // shadow-copy architecture we use glMapBufferRange(GL_MAP_READ_BIT) for a
+    // one-shot readback instead - slower but correct.
     //
-    // Limitation: if the PBO data is actually laid out as BGRA, the texture
-    // will have red/blue swapped (a colour error, not a black screen) because
-    // GLES cannot natively read GL_BGRA. A full fix would require reading the
-    // PBO back to CPU memory, swizzling, and re-uploading - that is not done
-    // here.
+    // If we did NOT do this and just flipped the format enum to GL_RGBA while
+    // leaving the data in BGRA order, GLES would read the bytes unchanged and
+    // the texture would have red/blue swapped - the "all-blue map" symptom
+    // reported with Xaero's World Map PBO uploads.
     const GLuint boundUnpackPBO = find_bound_buffer(GL_PIXEL_UNPACK_BUFFER_BINDING);
     if (boundUnpackPBO != 0) {
-        if (type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV) {
-            type = GL_UNSIGNED_BYTE;
+        // First, normalise the format/type to what we actually want to feed
+        // GLES: GL_UNSIGNED_INT_8_8_8_8(_REV) become GL_UNSIGNED_BYTE, and
+        // GL_BGRA becomes GL_RGBA. The data itself still needs swizzling if
+        // the original (format, type) requires it.
+        bool needSwizzle = false;
+        unsigned char swizzle[4];
+        if (internalFormat == GL_RGBA8 || internalFormat == GL_RGBA) {
+            GLenum normalisedFormat = format;
+            GLenum normalisedType = type;
+            if (get_rgba8_unpack_swizzle(normalisedFormat, normalisedType, swizzle)) {
+                needSwizzle = true;
+            }
         }
-        if (format == GL_BGRA) format = GL_RGBA;
-        return pixels;
+
+        if (!needSwizzle) {
+            // No swizzle needed - normalise enums and let GLES read directly
+            // from the PBO.
+            if (type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV) {
+                type = GL_UNSIGNED_BYTE;
+            }
+            if (format == GL_BGRA) format = GL_RGBA;
+            return pixels;
+        }
+
+        // Map the PBO for reading.
+        GLint pboSize = 0;
+        GLES.glGetBufferParameteriv(GL_PIXEL_UNPACK_BUFFER, GL_BUFFER_SIZE, &pboSize);
+        if (pboSize <= 0) {
+            LOG_E("swizzle_pixels_for_unpack: PBO %u has invalid size %d, cannot readback",
+                  boundUnpackPBO, pboSize)
+            if (type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV) type = GL_UNSIGNED_BYTE;
+            if (format == GL_BGRA) format = GL_RGBA;
+            return pixels;
+        }
+        void* mappedPBO = GLES.glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, (GLsizeiptr)pboSize, GL_MAP_READ_BIT);
+        if (!mappedPBO) {
+            LOG_E("swizzle_pixels_for_unpack: glMapBufferRange(GL_MAP_READ_BIT) failed on PBO %u, "
+                  "falling back to non-swizzled upload", boundUnpackPBO)
+            if (type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV) type = GL_UNSIGNED_BYTE;
+            if (format == GL_BGRA) format = GL_RGBA;
+            return pixels;
+        }
+
+        // Compute the real source pointer: PBO base + caller's byte offset.
+        const unsigned char* pboSrc = static_cast<const unsigned char*>(mappedPBO) +
+                                       reinterpret_cast<size_t>(pixels);
+
+        // Build the tight, swizzled output buffer using the same row-stride
+        // logic as the non-PBO path below.
+        const GLint rowLength    = GLState.texture.unpackRowLength;
+        const GLint alignment    = GLState.texture.unpackAlignment;
+        const GLint skipPixels   = GLState.texture.unpackSkipPixels;
+        const GLint skipRows     = GLState.texture.unpackSkipRows;
+        const GLint imageHeight  = GLState.texture.unpackImageHeight;
+        const GLint skipImages   = GLState.texture.unpackSkipImages;
+
+        constexpr GLuint bytesPerPixel = 4;
+        const GLuint effectiveRow = (rowLength > 0) ? static_cast<GLuint>(rowLength) : static_cast<GLuint>(width);
+        const GLuint effectiveImageHeight = (imageHeight > 0) ? static_cast<GLuint>(imageHeight) : static_cast<GLuint>(height);
+        const GLuint srcRowStride   = static_cast<GLuint>(widthalign(effectiveRow * bytesPerPixel, alignment));
+        const GLuint srcImageStride = srcRowStride * effectiveImageHeight;
+        const size_t srcSkipOffset =
+            static_cast<size_t>(skipImages) * srcImageStride +
+            static_cast<size_t>(skipRows) * srcRowStride +
+            static_cast<size_t>(skipPixels) * bytesPerPixel;
+
+        const GLuint pixelCount = static_cast<GLuint>(width) * static_cast<GLuint>(height) * static_cast<GLuint>(depth);
+        const size_t byteCount = static_cast<size_t>(pixelCount) * bytesPerPixel;
+        void* out = malloc(byteCount);
+        if (!out) {
+            LOG_E("swizzle_pixels_for_unpack: allocation of %zu bytes failed (PBO path)", byteCount)
+            GLES.glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
+            if (type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV) type = GL_UNSIGNED_BYTE;
+            if (format == GL_BGRA) format = GL_RGBA;
+            return pixels;
+        }
+
+        const unsigned char* src = pboSrc + srcSkipOffset;
+        unsigned char* dst = static_cast<unsigned char*>(out);
+        const size_t srcRowBytes = static_cast<size_t>(width) * bytesPerPixel;
+        if (srcRowStride == static_cast<GLuint>(width) * bytesPerPixel && depth == 1) {
+            memcpy(dst, src, byteCount);
+        } else {
+            for (GLsizei z = 0; z < depth; ++z) {
+                const unsigned char* srcRow = src + static_cast<size_t>(z) * srcImageStride;
+                for (GLsizei y = 0; y < height; ++y) {
+                    memcpy(dst, srcRow, srcRowBytes);
+                    srcRow += srcRowStride;
+                    dst += srcRowBytes;
+                }
+            }
+        }
+
+        // Unmap before we (or the caller) make any GLES texture calls - GLES
+        // forbids most operations on a still-mapped buffer.
+        GLES.glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
+
+        // Run the swizzle on the tight buffer.
+        ProcessColorSwizzle(out, pixelCount, swizzle, 4);
+
+        // Temporarily unbind the PBO so GLES reads from `out` (a real CPU
+        // pointer) instead of treating it as a byte offset into the PBO.
+        // The caller restores the binding via ScopedPboRestore after the
+        // GLES upload completes.
+        GLES.glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        set_bound_buffer_by_target(GL_PIXEL_UNPACK_BUFFER, 0);
+        if (outPboToRestore) *outPboToRestore = boundUnpackPBO;
+
+        format = GL_RGBA;
+        type = GL_UNSIGNED_BYTE;
+        return out;
     }
+
+    // --- Non-PBO path: `pixels` is a real CPU pointer. ---
 
     if (!pixels) return nullptr;
 
@@ -920,7 +1043,10 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
     // CPU-side BGRA/packed-type swizzle so GLES sees GL_RGBA + GL_UNSIGNED_BYTE.
     // This replaces the previous ≤128x128 GLES-texture-swizzle hack that
     // corrupted the texture's swizzle state and only worked for tiny textures.
-    const void* uploadPixels = swizzle_pixels_for_unpack((GLenum)internalFormat, format, type, pixels, width, height, 1);
+    GLuint pboToRestore = 0;
+    const void* uploadPixels = swizzle_pixels_for_unpack((GLenum)internalFormat, format, type, pixels, width, height, 1, &pboToRestore);
+    ScopedPboRestore pboGuard;
+    pboGuard.pboToRestore = pboToRestore;
 
     tex->format = format;
 
@@ -961,7 +1087,10 @@ void glTexImage3D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
     }
 
     // CPU-side BGRA/packed-type swizzle so GLES sees GL_RGBA + GL_UNSIGNED_BYTE.
-    const void* uploadPixels = swizzle_pixels_for_unpack((GLenum)internalFormat, format, type, pixels, width, height, depth);
+    GLuint pboToRestore = 0;
+    const void* uploadPixels = swizzle_pixels_for_unpack((GLenum)internalFormat, format, type, pixels, width, height, depth, &pboToRestore);
+    ScopedPboRestore pboGuard;
+    pboGuard.pboToRestore = pboToRestore;
 
     if (uploadPixels != pixels && uploadPixels != nullptr) {
         ScopedUnpackTight tightGuard;
@@ -1008,7 +1137,10 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, G
     // CPU-side BGRA/packed-type swizzle. Replaces the previous code that
     // permanently corrupted the texture's GL_TEXTURE_SWIZZLE_R/B state and
     // only handled the BGRA + GL_UNSIGNED_INT_8_8_8_8(_REV) case.
-    const void* uploadPixels = swizzle_pixels_for_unpack(texInternalFormat, format, type, pixels, width, height, 1);
+    GLuint pboToRestore = 0;
+    const void* uploadPixels = swizzle_pixels_for_unpack(texInternalFormat, format, type, pixels, width, height, 1, &pboToRestore);
+    ScopedPboRestore pboGuard;
+    pboGuard.pboToRestore = pboToRestore;
 
     if (uploadPixels != pixels && uploadPixels != nullptr) {
         ScopedUnpackTight tightGuard;
@@ -1037,7 +1169,10 @@ void glTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, G
         if (tex) texInternalFormat = tex->internal_format;
     }
 
-    const void* uploadPixels = swizzle_pixels_for_unpack(texInternalFormat, format, type, pixels, width, height, depth);
+    GLuint pboToRestore = 0;
+    const void* uploadPixels = swizzle_pixels_for_unpack(texInternalFormat, format, type, pixels, width, height, depth, &pboToRestore);
+    ScopedPboRestore pboGuard;
+    pboGuard.pboToRestore = pboToRestore;
 
     if (uploadPixels != pixels && uploadPixels != nullptr) {
         ScopedUnpackTight tightGuard;
