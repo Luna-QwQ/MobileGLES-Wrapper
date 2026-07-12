@@ -16,6 +16,7 @@
 #include <array>
 #include <string>
 #include <cstdint>
+#include <mutex>
 
 class Cache {
 public:
@@ -54,6 +55,11 @@ private:
     UnorderedMap<std::array<uint8_t, 32>, ListIterator, SHA256Hash> cacheMap;
     size_t cacheSize = 0;
     bool dirty = false;
+
+    // Guards cacheList, cacheMap, cacheSize, dirty. Lock is taken in
+    // getByHash/putByHash (runtime hot paths). load()/save() run during
+    // static init / process exit (single-threaded) and do not need the lock.
+    std::mutex cacheMutex;
 
     static std::array<uint8_t, 32> computeSHA256(const char* data);
     void maintainCacheSize();
