@@ -34,6 +34,8 @@ extern "C"
 
     GLuint find_bound_buffer(GLenum key);
 
+    GLuint find_bound_ssbo_indexed(GLuint index);
+
     GLuint gen_array();
 
     GLboolean has_array(GLuint key);

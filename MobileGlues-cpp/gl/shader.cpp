@@ -326,10 +326,9 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
     }
 
     // Step 6: Convert desktop GLSL → GLSL ES 3.2 (version 320)
-    std::string glsl_code = raw_code;
     uint essl_version = 320;
     int return_code = -1;
-    std::string converted = GLSLtoGLSLES(glsl_code.c_str(), shaderType, essl_version, 0, return_code);
+    std::string converted = GLSLtoGLSLES(raw_code, shaderType, essl_version, 0, return_code);
 
     if (return_code < 0) {
         // Conversion failed — fall back to original source
@@ -348,6 +347,6 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
     auto &ss = GLState.shader;
     auto infoIt = ss.shaderInfo.find(shader);
     if (infoIt != ss.shaderInfo.end()) {
-        infoIt->second.source = converted;
+        infoIt->second.source = std::move(converted);
     }
 }

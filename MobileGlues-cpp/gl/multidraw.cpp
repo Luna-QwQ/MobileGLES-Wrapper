@@ -780,8 +780,7 @@ GLAPI GLAPIENTRY void mg_glMultiDrawElementsBaseVertex_compute(GLenum mode, cons
     // -------------------------------------------------------------------------
     GLint prev_ssbo_base[5] = {};
     for (int i = 0; i < 5; ++i) {
-        GLES.glGetIntegeri_v(GL_SHADER_STORAGE_BUFFER_BINDING, i, &prev_ssbo_base[i]);
-        CHECK_GL_ERROR_NO_INIT
+        prev_ssbo_base[i] = (GLint)find_bound_ssbo_indexed(i);
     }
 
     GLES.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ibo);
