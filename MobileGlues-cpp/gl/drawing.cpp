@@ -30,7 +30,10 @@ GLuint g_tracked_tex2d_binding[32] = {0};
 // Atomic counter buffer emulation
 // ============================================================================
 
-static void syncAtomicCounters() {
+// inline: this is called from every draw/dispatch entry point (9 sites below).
+// Inlining lets the compiler fold the two fast-path early-return checks into
+// the caller and avoid a function call on the common no-atomic-counter path.
+static inline void syncAtomicCounters() {
     auto &bs = GLState.buffer;
     if (bs.atomicCounterBufferBinding == 0) return;
     if (bs.atomicCounterData.empty()) return;

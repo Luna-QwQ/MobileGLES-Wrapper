@@ -166,7 +166,9 @@ GLenum glGetError() {
 
 static std::string es_ext;
 
-std::string GetExtensionsList() {
+const std::string& GetExtensionsList() {
+    // es_ext is built once in InitGLESBaseExtensions() and is stable thereafter;
+    // return by reference so callers can read its buffer without a per-query copy.
     return es_ext;
 }
 
@@ -452,9 +454,10 @@ const GLubyte* glGetString(GLenum name) {
     // GL_EXTENSIONS — from our managed extension list
     // -------------------------------------------------------------------------
     case GL_EXTENSIONS: {
-        static std::string cached;
-        cached = GetExtensionsList();
-        return (const GLubyte*)cached.c_str();
+        // es_ext is stable after init; return its buffer directly, avoiding the
+        // per-query std::string copy (and potential reallocation) the previous
+        // static-cache assignment performed.
+        return (const GLubyte*)GetExtensionsList().c_str();
     }
 
     // -------------------------------------------------------------------------
