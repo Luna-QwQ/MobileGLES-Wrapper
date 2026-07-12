@@ -79,6 +79,7 @@ const char* Cache::get(const char* glsl, int* return_code) {
 
 const char* Cache::getByHash(const std::array<uint8_t, 32>& hash, int* return_code) {
     if (global_settings.max_glsl_cache_size <= 0) return nullptr;
+    std::lock_guard<std::mutex> lock(cacheMutex);
     auto it = cacheMap.find(hash);
     if (it == cacheMap.end()) return nullptr;
 
@@ -98,6 +99,8 @@ void Cache::putByHash(const std::array<uint8_t, 32>& hash, const char* essl, int
     size_t esslStrSize = strlen(essl) + 1;
 
     size_t entryMemory = sizeof(CacheEntry::sha256) + sizeof(size_t) + sizeof(int) + esslStrSize;
+
+    std::lock_guard<std::mutex> lock(cacheMutex);
 
     if (auto it = cacheMap.find(hash); it != cacheMap.end()) {
         cacheSize -= (sizeof(CacheEntry::sha256) + sizeof(size_t) + sizeof(int) + it->second->size);
