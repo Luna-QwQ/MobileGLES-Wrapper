@@ -219,6 +219,23 @@ void mg_glMultiDrawElementsBaseVertex_drawelements(GLenum mode, const GLsizei* c
                                                    const GLint* basevertex) {
     PREPARE_FOR_DRAW();
 
+    // Hoist index-size computation out of the per-draw loop: `type` is loop-invariant,
+    // so computing it once before the loop avoids primcount redundant switch dispatches.
+    size_t indexSize;
+    switch (type) {
+    case GL_UNSIGNED_INT:
+        indexSize = sizeof(GLuint);
+        break;
+    case GL_UNSIGNED_SHORT:
+        indexSize = sizeof(GLushort);
+        break;
+    case GL_UNSIGNED_BYTE:
+        indexSize = sizeof(GLubyte);
+        break;
+    default:
+        return;
+    }
+
     // Use CPU-side cached binding instead of glGetIntegerv GPU round-trip
     GLint prevElementBuffer = (GLint)find_bound_buffer(GL_ELEMENT_ARRAY_BUFFER_BINDING);
 
@@ -237,21 +254,6 @@ void mg_glMultiDrawElementsBaseVertex_drawelements(GLenum mode, const GLsizei* c
         GLsizei currentCount = counts[i];
         const GLvoid* currentIndices = indices[i];
         GLint currentBaseVertex = basevertex[i];
-
-        size_t indexSize;
-        switch (type) {
-        case GL_UNSIGNED_INT:
-            indexSize = sizeof(GLuint);
-            break;
-        case GL_UNSIGNED_SHORT:
-            indexSize = sizeof(GLushort);
-            break;
-        case GL_UNSIGNED_BYTE:
-            indexSize = sizeof(GLubyte);
-            break;
-        default:
-            return;
-        }
 
         size_t neededSize = currentCount * indexSize;
         tempMem.resize(neededSize);
@@ -676,8 +678,13 @@ GLAPI GLAPIENTRY void mg_glMultiDrawElementsBaseVertex_compute(GLenum mode, cons
     // Build prefix sums, first-index, and base-vertex arrays
     // -------------------------------------------------------------------------
     g_prefix_sum.resize(primcount);
-    std::vector<GLuint> first_index(primcount, 0);
-    std::vector<GLint> base_vtx(primcount, 0);
+    // Reuse thread_local capacity across calls: assign() reuses the existing
+    // allocation and re-zeroes, matching the original (primcount, 0) semantics
+    // without a per-call heap allocation (same pattern as tempMem above).
+    static thread_local std::vector<GLuint> first_index;
+    static thread_local std::vector<GLint> base_vtx;
+    first_index.assign(primcount, 0);
+    base_vtx.assign(primcount, 0);
 
     uint64_t running = 0;
     for (GLsizei i = 0; i < primcount; ++i) {
