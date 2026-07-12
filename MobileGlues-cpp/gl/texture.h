@@ -190,6 +190,13 @@ public:
     GLsizei width;
     GLsizei height;
     GLsizei depth;
+    // Tracks whether glGenerateMipmap has been called for this texture since
+    // the last glTexImage*(level=0) reset. When false, mipmap min-filters
+    // (GL_*_MIPMAP_*) are downgraded to their non-mipmap counterparts in
+    // glTexParameteri, because GLES returns (0,0,0,1) when sampling an
+    // incomplete mipmap chain whereas desktop GL gracefully falls back to
+    // the base level.
+    bool hasMipmaps = false;
     // Reverse mapping: set of TextureBindingSlot pointers (as uintptr_t) that
     // reference this object. Used by MarkTextureObjectForDeletion to avoid
     // iterating all 32 units × 24 targets (768 slots).

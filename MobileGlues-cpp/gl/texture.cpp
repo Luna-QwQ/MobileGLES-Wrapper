@@ -913,6 +913,9 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
     tex->swizzle_param[1] = GL_GREEN;
     tex->swizzle_param[2] = GL_BLUE;
     tex->swizzle_param[3] = GL_ALPHA;
+    // Reset mipmap tracking: a fresh glTexImage2D(level=0) invalidates any
+    // previously-generated mipmap chain.
+    if (level == 0) tex->hasMipmaps = false;
 
     // CPU-side BGRA/packed-type swizzle so GLES sees GL_RGBA + GL_UNSIGNED_BYTE.
     // This replaces the previous ≤128x128 GLES-texture-swizzle hack that
@@ -979,6 +982,7 @@ void glTexImage3D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
     tex->swizzle_param[1] = GL_GREEN;
     tex->swizzle_param[2] = GL_BLUE;
     tex->swizzle_param[3] = GL_ALPHA;
+    if (level == 0) tex->hasMipmaps = false;
 
     CHECK_GL_ERROR
 }
@@ -1316,6 +1320,13 @@ void glGenerateMipmap(GLenum target) {
     LOG()
     LOG_D("glGenerateMipmap, target: %s", glEnumToString(target))
     GLES.glGenerateMipmap(target);
+    // Mark this texture as having a complete mipmap chain so that
+    // glTexParameteri(GL_TEXTURE_MIN_FILTER, GL_*_MIPMAP_*) does not need to
+    // downgrade the filter.
+    {
+        GET_TEXTURE_OBJECT(target);
+        if (tex) tex->hasMipmaps = true;
+    }
     CHECK_GL_ERROR
 }
 
@@ -1334,6 +1345,29 @@ void glTexParameterf(GLenum target, GLenum pname, GLfloat param) {
         return;
     }
 
+    // Same mipmap-filter downgrade as glTexParameteri - see comment there.
+    if (pname == GL_TEXTURE_MIN_FILTER) {
+        GLint iparam = (GLint)param;
+        switch (iparam) {
+        case GL_NEAREST_MIPMAP_NEAREST:
+        case GL_LINEAR_MIPMAP_NEAREST:
+        case GL_NEAREST_MIPMAP_LINEAR:
+        case GL_LINEAR_MIPMAP_LINEAR: {
+            GET_TEXTURE_OBJECT(target);
+            if (tex && !tex->hasMipmaps) {
+                GLint downgraded = (iparam == GL_NEAREST_MIPMAP_NEAREST || iparam == GL_NEAREST_MIPMAP_LINEAR)
+                                   ? GL_NEAREST : GL_LINEAR;
+                LOG_D("glTexParameterf: downgrading mipmap min-filter %d -> %d (texture %u has no mipmap chain)",
+                      iparam, downgraded, tex->texture);
+                param = (GLfloat)downgraded;
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
     GLES.glTexParameterf(target, pname, param);
     CHECK_GL_ERROR
 }
@@ -1347,6 +1381,35 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param) {
     if (pname == GL_TEXTURE_LOD_BIAS_QCOM && !g_gles_caps.GL_QCOM_texture_lod_bias) {
         LOG_D("Does not support GL_QCOM_texture_lod_bias, skipped!")
         return;
+    }
+
+    // GLES 3.2 returns (0,0,0,1) when sampling a texture whose min-filter
+    // requires mipmaps but whose mipmap chain is incomplete (e.g. only level 0
+    // was uploaded and glGenerateMipmap was never called). Desktop GL is more
+    // lenient: it falls back to the base level. To match desktop behaviour
+    // and avoid a black screen (a very common symptom when a mod like Xaero's
+    // World Map sets GL_LINEAR_MIPMAP_LINEAR but skips mipmap generation),
+    // downgrade mipmap min-filters to their non-mipmap counterparts when the
+    // texture has no mipmap chain.
+    if (pname == GL_TEXTURE_MIN_FILTER) {
+        switch (param) {
+        case GL_NEAREST_MIPMAP_NEAREST:
+        case GL_LINEAR_MIPMAP_NEAREST:
+        case GL_NEAREST_MIPMAP_LINEAR:
+        case GL_LINEAR_MIPMAP_LINEAR: {
+            GET_TEXTURE_OBJECT(target);
+            if (tex && !tex->hasMipmaps) {
+                GLint downgraded = (param == GL_NEAREST_MIPMAP_NEAREST || param == GL_NEAREST_MIPMAP_LINEAR)
+                                   ? GL_NEAREST : GL_LINEAR;
+                LOG_D("glTexParameteri: downgrading mipmap min-filter 0x%X -> 0x%X (texture %u has no mipmap chain)",
+                      param, downgraded, tex->texture);
+                param = downgraded;
+            }
+            break;
+        }
+        default:
+            break;
+        }
     }
 
     GLES.glTexParameteri(target, pname, param);
@@ -1376,6 +1439,33 @@ void glTexParameteriv(GLenum target, GLenum pname, const GLint* params) {
         } else {
             LOG_E("glTexParameteriv: params is nullptr for GL_TEXTURE_SWIZZLE_RGBA")
         }
+    } else if (pname == GL_TEXTURE_MIN_FILTER && params) {
+        // Same mipmap-filter downgrade as glTexParameteri - see comment there.
+        // glTexParameteriv takes a 1-element array; we may need to mutate the
+        // value before forwarding to GLES.
+        GLint param = params[0];
+        switch (param) {
+        case GL_NEAREST_MIPMAP_NEAREST:
+        case GL_LINEAR_MIPMAP_NEAREST:
+        case GL_NEAREST_MIPMAP_LINEAR:
+        case GL_LINEAR_MIPMAP_LINEAR: {
+            GET_TEXTURE_OBJECT(target);
+            if (tex && !tex->hasMipmaps) {
+                GLint downgraded = (param == GL_NEAREST_MIPMAP_NEAREST || param == GL_NEAREST_MIPMAP_LINEAR)
+                                   ? GL_NEAREST : GL_LINEAR;
+                LOG_D("glTexParameteriv: downgrading mipmap min-filter 0x%X -> 0x%X (texture %u has no mipmap chain)",
+                      param, downgraded, tex->texture);
+                GLint downgradedParams[1] = { downgraded };
+                GLES.glTexParameteriv(target, pname, downgradedParams);
+                CHECK_GL_ERROR
+                return;
+            }
+            break;
+        }
+        default:
+            break;
+        }
+        GLES.glTexParameteriv(target, pname, params);
     } else {
         GLES.glTexParameteriv(target, pname, params);
     }
