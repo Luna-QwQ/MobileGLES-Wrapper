@@ -722,28 +722,6 @@ void ProcessColorSwizzle(void* data, GLuint pixelCount, const unsigned char* swi
     if (!data || !swizzle || pixelCount == 0 || channels <= 0 || channels > 4) return;
     unsigned char* bytes = static_cast<unsigned char*>(data);
     unsigned char scratch[4];
-
-    // DIAGNOSTIC TEST: if swizzle is not identity, fill output with solid green
-    // [0,255,0,255] to confirm this code path is actually reached.
-    // If the user sees green instead of blue, swizzle IS running and the bug is
-    // in the swizzle table or downstream. If still blue, swizzle is NOT running
-    // and the bug is elsewhere.
-    bool isIdentity = (channels == 4 &&
-                       swizzle[0] == SWIZZLE_RED &&
-                       swizzle[1] == SWIZZLE_GREEN &&
-                       swizzle[2] == SWIZZLE_BLUE &&
-                       swizzle[3] == SWIZZLE_ALPHA);
-    if (!isIdentity) {
-        for (GLuint i = 0; i < pixelCount; ++i) {
-            unsigned char* pixel = bytes + i * channels;
-            pixel[0] = 0x00;  // R
-            pixel[1] = 0xFF;  // G
-            pixel[2] = 0x00;  // B
-            if (channels >= 4) pixel[3] = 0xFF;  // A
-        }
-        return;
-    }
-
     for (GLuint i = 0; i < pixelCount; ++i) {
         unsigned char* pixel = bytes + i * channels;
         for (int ch = 0; ch < channels; ++ch) {

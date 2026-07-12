@@ -729,6 +729,12 @@ static const void* swizzle_pixels_for_unpack(GLenum internalFormat, GLenum& form
     // the texture would have red/blue swapped - the "all-blue map" symptom
     // reported with Xaero's World Map PBO uploads.
     const GLuint boundUnpackPBO = find_bound_buffer(GL_PIXEL_UNPACK_BUFFER_BINDING);
+
+    // DIAGNOSTIC LOG: trace every entry to identify why swizzle is not triggered.
+    // Compare the format/type/internalFormat Xaero actually passes.
+    LOG_E("SWIZZLE_DIAG: entry internalFormat=0x%X format=0x%X type=0x%X pbo=%u pixels=%p size=%dx%dx%d",
+          internalFormat, format, type, boundUnpackPBO, pixels, width, height, depth);
+
     if (boundUnpackPBO != 0) {
         // First, normalise the format/type to what we actually want to feed
         // GLES: GL_UNSIGNED_INT_8_8_8_8(_REV) become GL_UNSIGNED_BYTE, and
@@ -743,10 +749,14 @@ static const void* swizzle_pixels_for_unpack(GLenum internalFormat, GLenum& form
                 needSwizzle = true;
             }
         }
+        LOG_E("SWIZZLE_DIAG: PBO path needSwizzle=%d internalFormat=0x%X format=0x%X type=0x%X",
+              needSwizzle, internalFormat, format, type);
 
         if (!needSwizzle) {
             // No swizzle needed - normalise enums and let GLES read directly
             // from the PBO.
+            LOG_E("SWIZZLE_DIAG: PBO early-return (no swizzle) internalFormat=0x%X format=0x%X type=0x%X",
+                  internalFormat, format, type);
             if (type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV) {
                 type = GL_UNSIGNED_BYTE;
             }
@@ -850,7 +860,11 @@ static const void* swizzle_pixels_for_unpack(GLenum internalFormat, GLenum& form
     // Only handle the RGBA8 family for now; other internal formats are passed
     // through to GLES unchanged (the format enum may still be GL_BGRA, in
     // which case GLES will report an error - matching previous behaviour).
-    if (internalFormat != GL_RGBA8 && internalFormat != GL_RGBA) return pixels;
+    if (internalFormat != GL_RGBA8 && internalFormat != GL_RGBA) {
+        LOG_E("SWIZZLE_DIAG: non-PBO early-return (not RGBA8) internalFormat=0x%X format=0x%X type=0x%X",
+              internalFormat, format, type);
+        return pixels;
+    }
 
     unsigned char swizzle[4];
     if (!get_rgba8_unpack_swizzle(format, type, swizzle)) {
@@ -859,12 +873,16 @@ static const void* swizzle_pixels_for_unpack(GLenum internalFormat, GLenum& form
         // when paired with GL_RGBA, so normalize them to GL_UNSIGNED_BYTE
         // (the byte layout is already RGBA on little-endian for the _REV
         // variant; the non-REV variant would have been swizzled above).
+        LOG_E("SWIZZLE_DIAG: non-PBO early-return (no swizzle needed) format=0x%X type=0x%X",
+              format, type);
         if (type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV) {
             type = GL_UNSIGNED_BYTE;
         }
         if (format == GL_BGRA) format = GL_RGBA;
         return pixels;
     }
+
+    LOG_E("SWIZZLE_DIAG: non-PBO swizzle TRIGGERED format=0x%X type=0x%X", format, type);
 
     // Read the caller's GL_UNPACK_* layout parameters so we can locate the
     // actual source rows correctly. The cache mirrors what glPixelStorei()
