@@ -65,7 +65,7 @@ void temporarilyBindBuffer(GLuint bufferID, GLenum target = GL_ARRAY_BUFFER) {
     GLuint prev = find_bound_buffer(bindingQuery);  // CPU-side lookup, no GPU stall
     if (prev == bufferID) {
         bufferBindingStack[target].push_back(-1);
-        // return;
+        return;
     }
     bufferBindingStack[target].push_back(prev);
 
@@ -78,23 +78,22 @@ void restoreTemporaryBufferBinding(GLenum target = GL_ARRAY_BUFFER) {
     auto it = bufferBindingStack.find(target);
     if (it == bufferBindingStack.end() || it->second.empty()) {
         LOG_D("[DSA] [Restore] no saved binding for target 0x%X", target);
-        // return;
+        return;
     }
 
     GLuint toRestore = it->second.back();
     it->second.pop_back();
+    if (it->second.empty()) bufferBindingStack.erase(it);
 
     if (toRestore == static_cast<GLuint>(-1)) {
         LOG_D("[DSA] [Restore] target=0x%X, no binding to restore", target);
-        // return;
+        return;
     }
 
     LOG_D("[DSA] [Restore] target=0x%X, bind back to %u", target, toRestore);
     CHECK_GL_ERROR;
     glBindBuffer(target, toRestore);
     CHECK_GL_ERROR_NO_INIT;
-
-    if (it->second.empty()) bufferBindingStack.erase(it);
 }
 
 void glCreateBuffers(GLsizei n, GLuint* buffers) {
@@ -379,7 +378,7 @@ void temporarilyBindFramebuffer(GLuint framebufferID, GLenum target = GL_DRAW_FR
     GLuint prev = (target == GL_READ_FRAMEBUFFER) ? current_read_fbo : current_draw_fbo;
     if (prev == framebufferID) {
         framebufferBindingStack[target].push_back(-1);
-        // return;
+        return;
     }
     framebufferBindingStack[target].push_back(prev);
     LOG_D("[DSA] [TempBind] target=0x%X, prev=%u -> bind=%u", target, prev, framebufferID);
@@ -391,19 +390,20 @@ void restoreTemporaryFramebufferBinding(GLenum target = GL_DRAW_FRAMEBUFFER) {
     auto it = framebufferBindingStack.find(target);
     if (it == framebufferBindingStack.end() || it->second.empty()) {
         LOG_D("[DSA] [Restore] no saved binding for target 0x%X", target);
-        // return;
+        return;
     }
     GLuint toRestore = it->second.back();
     it->second.pop_back();
+    if (it->second.empty()) framebufferBindingStack.erase(it);
+
     if (toRestore == static_cast<GLuint>(-1)) {
         LOG_D("[DSA] [Restore] target=0x%X, no binding to restore", target);
-        // return;
+        return;
     }
     LOG_D("[DSA] [Restore] target=0x%X, bind back to %u", target, toRestore);
     CHECK_GL_ERROR;
     glBindFramebuffer(target, toRestore);
     CHECK_GL_ERROR_NO_INIT;
-    if (it->second.empty()) framebufferBindingStack.erase(it);
 }
 
 void glCreateFramebuffers(GLsizei n, GLuint* framebuffers) {
@@ -708,7 +708,7 @@ void temporarilyBindRenderbuffer(GLuint renderbufferID) {
     glGetIntegerv(bindingQuery, &prev);
     if (prev == renderbufferID) {
         renderbufferBindingStack[GL_RENDERBUFFER].push_back(-1);
-        // return;
+        return;
     }
     renderbufferBindingStack[GL_RENDERBUFFER].push_back(static_cast<GLuint>(prev));
     LOG_D("[DSA] [TempBind] prev=%u -> bind=%u", prev, renderbufferID);
@@ -720,19 +720,20 @@ void restoreTemporaryRenderbufferBinding() {
     auto it = renderbufferBindingStack.find(GL_RENDERBUFFER);
     if (it == renderbufferBindingStack.end() || it->second.empty()) {
         LOG_D("[DSA] [Restore] no saved binding for GL_RENDERBUFFER");
-        // return;
+        return;
     }
     GLuint toRestore = it->second.back();
     it->second.pop_back();
+    if (it->second.empty()) renderbufferBindingStack.erase(it);
+
     if (toRestore == static_cast<GLuint>(-1)) {
         LOG_D("[DSA] [Restore] no binding to restore for GL_RENDERBUFFER");
-        // return;
+        return;
     }
     LOG_D("[DSA] [Restore] bind back to %u", toRestore);
     CHECK_GL_ERROR;
     glBindRenderbuffer(GL_RENDERBUFFER, toRestore);
     CHECK_GL_ERROR_NO_INIT;
-    if (it->second.empty()) renderbufferBindingStack.erase(it);
 }
 
 void glCreateRenderbuffers(GLsizei n, GLuint* renderbuffers) {
@@ -828,7 +829,7 @@ void temporarilyBindTexture(GLuint textureID, GLenum possibleTarget = 0) {
     if (prevTexObj) prev = prevTexObj->texture;
     if (prev == textureID) {
         textureBindingStack[target].push_back(-1);
-        // return;
+        return;
     }
     textureBindingStack[target].push_back(prev);
     LOG_D("[DSA] [TempBind] target=0x%X, prev=%u -> bind=%u", target, prev, textureID);
@@ -842,23 +843,23 @@ void restoreTemporaryTextureBinding(GLuint textureID, GLenum possibleTarget = 0)
     auto stackIt = textureBindingStack.find(target);
     if (stackIt == textureBindingStack.end() || stackIt->second.empty()) {
         LOG_D("[DSA] [Restore] no saved binding for target 0x%X", target);
-        // return;
+        return;
     }
 
     GLuint toRestore = stackIt->second.back();
     stackIt->second.pop_back();
+    if (stackIt->second.empty()) {
+        textureBindingStack.erase(stackIt);
+    }
+
     if (toRestore == static_cast<GLuint>(-1)) {
         LOG_D("[DSA] [Restore] target=0x%X, no binding to restore", target);
-        // return;
+        return;
     }
     LOG_D("[DSA] [Restore] target=0x%X, bind back to %u", target, toRestore);
     CHECK_GL_ERROR;
     glBindTexture(target, toRestore);
     CHECK_GL_ERROR_NO_INIT;
-
-    if (stackIt->second.empty()) {
-        textureBindingStack.erase(stackIt);
-    }
 }
 
 void glCreateTextures(GLenum target, GLsizei n, GLuint* textures) {
@@ -1167,7 +1168,7 @@ void temporarilyBindVertexArray(GLint vaoID) {
     GLuint current = find_bound_array();  // CPU-side lookup, no GPU stall
     if (current == (GLuint)vaoID) {
         prevVAO = -1;
-        // return;
+        return;
     }
     LOG_D("[DSA] [TempBind] VAO: %u -> bind=%u", current, vaoID);
     CHECK_GL_ERROR;
@@ -1177,7 +1178,7 @@ void temporarilyBindVertexArray(GLint vaoID) {
 }
 void restoreTemporaryVertexArrayBinding() {
     if (prevVAO == -1) {
-        // return;
+        return;
     }
     LOG_D("[DSA] [Restore] VAO: bind back to %u", prevVAO);
     CHECK_GL_ERROR;
@@ -1446,6 +1447,8 @@ void glCreateSamplers(GLsizei n, GLuint* samplers) {
         LOG_W("[DSA] Invalid parameters for glCreateSamplers");
         // return;
     }
+    GLuint prevSampler = 0;
+    glGetIntegerv(GL_SAMPLER_BINDING, (GLint*)&prevSampler);
     for (GLsizei i = 0; i < n; ++i) {
         GLuint samplerID = 0;
         glGenSamplers(1, &samplerID);
@@ -1454,8 +1457,6 @@ void glCreateSamplers(GLsizei n, GLuint* samplers) {
             continue;
         }
 
-        GLuint prevSampler = 0;
-        glGetIntegerv(GL_SAMPLER_BINDING, (GLint*)&prevSampler);
         glBindSampler(1, samplerID);
         glBindSampler(1, prevSampler);
 
@@ -1475,6 +1476,8 @@ void glCreateProgramPipelines(GLsizei n, GLuint* pipelines) {
         LOG_W("[DSA] Invalid parameters for glCreateProgramPipelines");
         // return;
     }
+    GLuint prevPipeline = 0;
+    glGetIntegerv(GL_PROGRAM_PIPELINE_BINDING, (GLint*)&prevPipeline);
     for (GLsizei i = 0; i < n; ++i) {
         GLuint pipelineID = 0;
         glGenProgramPipelines(1, &pipelineID);
@@ -1483,8 +1486,6 @@ void glCreateProgramPipelines(GLsizei n, GLuint* pipelines) {
             continue;
         }
 
-        GLuint prevPipeline = 0;
-        glGetIntegerv(GL_PROGRAM_PIPELINE_BINDING, (GLint*)&prevPipeline);
         glBindProgramPipeline(pipelineID);
         CHECK_GL_ERROR;
         glBindProgramPipeline(prevPipeline);
@@ -1572,7 +1573,7 @@ static void pushXFB(GLuint xfb) {
     glGetIntegerv(GL_TRANSFORM_FEEDBACK_BINDING, &prev);
     if (xfb == prev) {
         g_xfbBindingStack.push_back(-1);
-        // return;
+        return;
     }
     g_xfbBindingStack.push_back(prev);
     glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, xfb);
@@ -1586,7 +1587,7 @@ static void popXFB() {
     g_xfbBindingStack.pop_back();
     if (prev == -1) {
         LOG_D("[DSA] No previous XFB binding to restore");
-        // return;
+        return;
     }
     glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, (GLuint)prev);
     CHECK_GL_ERROR;
