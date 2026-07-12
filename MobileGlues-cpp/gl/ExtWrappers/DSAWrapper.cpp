@@ -1505,8 +1505,7 @@ void glCreateQueries(GLenum target, GLsizei n, GLuint* ids) {
 
 static GLint pushQueryBufferBinding(GLuint buffer) {
     LOG_D("[DSA] pushQueryBufferBinding, buffer: %u", buffer);
-    GLint prev = 0;
-    glGetIntegerv(GL_QUERY_BUFFER_BINDING, &prev);
+    GLint prev = (GLint)find_bound_buffer(GL_QUERY_BUFFER_BINDING);
     glBindBuffer(GL_QUERY_BUFFER, buffer);
     CHECK_GL_ERROR;
     return prev;

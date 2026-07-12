@@ -183,14 +183,23 @@ public:
     explicit TextureBindingSlot(TargetEnum target) : m_target(target), m_boundObject(nullptr) {}
 
     void Bind(TextureObject* object) {
-        // Track reverse mapping: remove old binding, add new binding
-        if (m_boundObject && m_boundObject != object) {
-            m_boundObject->binding_slots.erase(
-                reinterpret_cast<uintptr_t>(this));
+        // No-op: already bound to the same object (avoids redundant vector work).
+        if (m_boundObject == object) return;
+        // Remove this slot from the old texture's reverse mapping.
+        if (m_boundObject) {
+            auto& slots = m_boundObject->binding_slots;
+            uintptr_t self = reinterpret_cast<uintptr_t>(this);
+            for (size_t i = 0; i < slots.size(); ++i) {
+                if (slots[i] == self) {
+                    slots[i] = slots.back(); // swap-with-last (order doesn't matter)
+                    slots.pop_back();
+                    break;
+                }
+            }
         }
         m_boundObject = object;
         if (object) {
-            object->binding_slots.insert(reinterpret_cast<uintptr_t>(this));
+            object->binding_slots.push_back(reinterpret_cast<uintptr_t>(this));
         }
     }
 

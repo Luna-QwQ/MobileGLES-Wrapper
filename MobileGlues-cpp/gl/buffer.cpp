@@ -49,6 +49,7 @@ enum BindingIndex : int {
     BI_ELEMENT_ARRAY,
     BI_PIXEL_PACK,
     BI_PIXEL_UNPACK,
+    BI_QUERY_BUFFER,
     BI_SHADER_STORAGE,
     BI_TRANSFORM_FEEDBACK,
     BI_UNIFORM_BUFFER,
@@ -175,6 +176,7 @@ static inline int binding_target_to_index(GLenum target) {
     case GL_ELEMENT_ARRAY_BUFFER:     return BI_ELEMENT_ARRAY;
     case GL_PIXEL_PACK_BUFFER:        return BI_PIXEL_PACK;
     case GL_PIXEL_UNPACK_BUFFER:      return BI_PIXEL_UNPACK;
+    case GL_QUERY_BUFFER:             return BI_QUERY_BUFFER;
     case GL_SHADER_STORAGE_BUFFER:    return BI_SHADER_STORAGE;
     case GL_TRANSFORM_FEEDBACK_BUFFER:return BI_TRANSFORM_FEEDBACK;
     case GL_UNIFORM_BUFFER:           return BI_UNIFORM_BUFFER;
@@ -201,6 +203,7 @@ GLuint find_bound_buffer(GLenum key) {
     case GL_DISPATCH_INDIRECT_BUFFER_BINDING:  return g_bound_buffers_arr[BI_DISPATCH_INDIRECT];
     case GL_PIXEL_PACK_BUFFER_BINDING:         return g_bound_buffers_arr[BI_PIXEL_PACK];
     case GL_PIXEL_UNPACK_BUFFER_BINDING:       return g_bound_buffers_arr[BI_PIXEL_UNPACK];
+    case GL_QUERY_BUFFER_BINDING:              return g_bound_buffers_arr[BI_QUERY_BUFFER];
     case GL_SHADER_STORAGE_BUFFER_BINDING:     return g_bound_buffers_arr[BI_SHADER_STORAGE];
     case GL_TRANSFORM_FEEDBACK_BUFFER_BINDING: return g_bound_buffers_arr[BI_TRANSFORM_FEEDBACK];
     case GL_UNIFORM_BUFFER_BINDING:            return g_bound_buffers_arr[BI_UNIFORM_BUFFER];
@@ -214,6 +217,7 @@ static GLenum get_binding_query(GLenum target) {
     case GL_ELEMENT_ARRAY_BUFFER:      return GL_ELEMENT_ARRAY_BUFFER_BINDING;
     case GL_PIXEL_PACK_BUFFER:         return GL_PIXEL_PACK_BUFFER_BINDING;
     case GL_PIXEL_UNPACK_BUFFER:       return GL_PIXEL_UNPACK_BUFFER_BINDING;
+    case GL_QUERY_BUFFER:              return GL_QUERY_BUFFER_BINDING;
     case GL_UNIFORM_BUFFER:            return GL_UNIFORM_BUFFER_BINDING;
     case GL_TRANSFORM_FEEDBACK_BUFFER: return GL_TRANSFORM_FEEDBACK_BUFFER_BINDING;
     case GL_COPY_READ_BUFFER:          return GL_COPY_READ_BUFFER_BINDING;
@@ -441,6 +445,20 @@ struct atomic_buffer {
 static std::vector<atomic_buffer> g_buffer_map_atomic_buffer_info;
 static std::vector<GLuint> g_buffer_map_ssbo_id;
 
+// Track indexed SSBO binding (stores the real GL buffer ID for CPU-side lookup,
+// avoiding glGetIntegeri_v GPU round-trips in the multidraw compute path).
+static inline void track_ssbo_indexed(GLuint index, GLuint real_id) {
+    if (g_buffer_map_ssbo_id.empty()) {
+        g_buffer_map_ssbo_id.resize(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS, 0);
+    }
+    if (index < g_buffer_map_ssbo_id.size()) g_buffer_map_ssbo_id[index] = real_id;
+}
+
+GLuint find_bound_ssbo_indexed(GLuint index) {
+    if (index < g_buffer_map_ssbo_id.size()) return g_buffer_map_ssbo_id[index];
+    return 0;
+}
+
 void bindAllAtomicCounterAsSSBO() {
     const size_t count = g_buffer_map_atomic_buffer_info.size();
     for (size_t i = 0; i < count; ++i) {
@@ -460,12 +478,14 @@ void glBindBufferRange(GLenum target, GLuint index, GLuint buffer, GLintptr offs
 
     if (buffer == 0) {
         GLES.glBindBufferRange(target, index, buffer, offset, size);
+        if (target == GL_SHADER_STORAGE_BUFFER) track_ssbo_indexed(index, 0);
         CHECK_GL_ERROR
         return;
     }
     auto [real_buffer, exists] = find_real_buffer_with_exists(buffer);
     if (!exists) {
         GLES.glBindBufferRange(target, index, buffer, offset, size);
+        if (target == GL_SHADER_STORAGE_BUFFER) track_ssbo_indexed(index, buffer);
         CHECK_GL_ERROR
         return;
     }
@@ -480,6 +500,8 @@ void glBindBufferRange(GLenum target, GLuint index, GLuint buffer, GLintptr offs
             g_buffer_map_atomic_buffer_info.resize(GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS, {});
         }
         g_buffer_map_atomic_buffer_info[index] = {buffer, size, offset};
+    } else if (target == GL_SHADER_STORAGE_BUFFER) {
+        track_ssbo_indexed(index, real_buffer);
     }
     CHECK_GL_ERROR
 }
@@ -490,12 +512,14 @@ void glBindBufferBase(GLenum target, GLuint index, GLuint buffer) {
 
     if (buffer == 0) {
         GLES.glBindBufferBase(target, index, buffer);
+        if (target == GL_SHADER_STORAGE_BUFFER) track_ssbo_indexed(index, 0);
         CHECK_GL_ERROR
         return;
     }
     auto [real_buffer, exists] = find_real_buffer_with_exists(buffer);
     if (!exists) {
         GLES.glBindBufferBase(target, index, buffer);
+        if (target == GL_SHADER_STORAGE_BUFFER) track_ssbo_indexed(index, buffer);
         CHECK_GL_ERROR
         return;
     }
@@ -506,10 +530,7 @@ void glBindBufferBase(GLenum target, GLuint index, GLuint buffer) {
     }
     GLES.glBindBufferBase(target, index, real_buffer);
     if (target == GL_SHADER_STORAGE_BUFFER) {
-        if (g_buffer_map_ssbo_id.empty()) {
-            g_buffer_map_ssbo_id.resize(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS, 0);
-        }
-        g_buffer_map_ssbo_id[index] = buffer;
+        track_ssbo_indexed(index, real_buffer);
     }
     CHECK_GL_ERROR
 }

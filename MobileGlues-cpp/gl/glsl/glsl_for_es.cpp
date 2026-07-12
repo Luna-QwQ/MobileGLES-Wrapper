@@ -45,6 +45,7 @@
 #include <mutex>
 #include <cstring>
 #include <cctype>
+#include <cstdio>
 #include "cache.h"
 #include "../../version.h"
 
@@ -1086,13 +1087,18 @@ std::string GLSLtoGLSLES_2(const char* glsl_code, GLenum glsl_type, uint essl_ve
 
 std::string GLSLtoGLSLES(const char* glsl_code, GLenum glsl_type, uint essl_version, uint glsl_version,
                          int& return_code) {
-    // Build cache key
-    std::string key(glsl_code);
-    key += "\n//" + std::to_string(glsl_type) + "|" + std::to_string(MAJOR) + "." + std::to_string(MINOR) +
-           "." + std::to_string(REVISION) + "|" + std::to_string(essl_version);
+    // Build cache suffix on stack (no heap allocation).
+    // Suffix format: \n//<glsl_type>|<MAJOR>.<MINOR>.<REVISION>|<essl_version>
+    char suffix[64];
+    snprintf(suffix, sizeof(suffix), "\n//%u|%d.%d.%d|%u",
+             (unsigned)glsl_type, MAJOR, MINOR, REVISION, essl_version);
+
+    // Compute hash incrementally over glsl_code + suffix.
+    // Avoids copying the full GLSL source into a std::string key on every call.
+    auto hash = Cache::computeSHA256Parts(glsl_code, suffix);
 
     int cached_rc = -1;
-    const char* cached = Cache::get_instance().get(key.c_str(), &cached_rc);
+    const char* cached = Cache::get_instance().getByHash(hash, &cached_rc);
     if (cached) {
         LOG_D("GLSL Hit Cache:\n%s\n-->\n%s", glsl_code, cached)
         return_code = cached_rc;
@@ -1103,7 +1109,7 @@ std::string GLSLtoGLSLES(const char* glsl_code, GLenum glsl_type, uint essl_vers
     std::string converted = GLSLtoGLSLES_2(glsl_code, glsl_type, essl_version, return_code);
     if (return_code >= 0 && !converted.empty()) {
         converted = process_uniform_declarations(converted);
-        Cache::get_instance().put(key.c_str(), converted.c_str(), return_code);
+        Cache::get_instance().putByHash(hash, converted.c_str(), return_code);
     }
 
     return (return_code >= 0) ? converted : glsl_code;
