@@ -771,6 +771,19 @@ void glBufferStorage(GLenum target, GLsizeiptr size, const void* data, GLbitfiel
             ((flags & GL_MAP_PERSISTENT_BIT) != 0 || (flags & GL_DYNAMIC_STORAGE_BIT) != 0))
             flags |= (GL_MAP_WRITE_BIT | GL_MAP_COHERENT_BIT | GL_MAP_PERSISTENT_BIT);
         GLES.glBufferStorageEXT(target, size, data, flags);
+        // Mirror glBufferData: keep the PBO CPU shadow in sync so the BGRA
+        // swizzle in texture.cpp can read from CPU memory instead of mapping
+        // the (immutable, possibly non-DYNAMIC_STORAGE) GLES buffer for read.
+        // Without this, Xaero-style glBufferStorage PBO uploads would miss
+        // the shadow and fall back to glCopyBufferSubData, which may fail on
+        // some GLES drivers, leaving the texture un-swizzled (blue).
+        if (target == GL_PIXEL_UNPACK_BUFFER) {
+            int idx = binding_target_to_index(target);
+            if (idx >= 0) {
+                set_buffer_data_size(g_bound_buffers_arr[idx], size);
+                pbo_shadow_alloc(g_bound_buffers_arr[idx], size, data);
+            }
+        }
     }
     CHECK_GL_ERROR
 }

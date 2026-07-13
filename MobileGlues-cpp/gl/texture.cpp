@@ -338,7 +338,20 @@ void internal_convert(GLenum* internal_format, GLenum* type, GLenum* format) {
     // --- Most common formats (hot path) ---
     case GL_RGBA8:
     case GL_RGBA:
-        if (type) *type = GL_UNSIGNED_BYTE;
+        // Preserve the original type when format is GL_BGRA. The CPU swizzle
+        // in swizzle_pixels_for_unpack MUST see the real packed type
+        // (GL_UNSIGNED_INT_8_8_8_8 = [A,R,G,B] vs GL_UNSIGNED_BYTE / _REV =
+        // [B,G,R,A]) to pick the correct byte permutation. Overwriting type
+        // to GL_UNSIGNED_BYTE here would make all BGRA uploads look like
+        // GL_UNSIGNED_BYTE, causing the wrong swizzle for _8_8_8_8 data:
+        // [A,R,G,B] would be permuted as [B,G,R,A] giving [G,R,A,B] — with
+        // alpha=255 this lands 0xFF in the blue channel, producing the
+        // "all-blue texture" symptom seen with Xaero's World Map.
+        // swizzle_pixels_for_unpack() normalises type to GL_UNSIGNED_BYTE
+        // itself after computing the swizzle.
+        if (type && !(format && *format == GL_BGRA)) {
+            *type = GL_UNSIGNED_BYTE;
+        }
         // Preserve GL_BGRA if the caller explicitly requested it; the caller
         // is responsible for running the CPU swizzle and flipping the enum
         // to GL_RGBA before invoking GLES.
