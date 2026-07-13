@@ -1673,12 +1673,14 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param) {
         }
     }
 
-    // Intercept GL_TEXTURE_SWIZZLE_R/G/B/A: record the application's requested
-    // swizzle into tex->swizzle_param[] but do NOT forward to GLES.
-    // We do CPU-side BGRA->RGBA byte swizzle during pixel upload, so the GLES
-    // texture already stores correct RGBA data. If we forwarded Xaero's
-    // desktop-GL-style R=BLUE/B=RED swizzle to GLES, GLES would re-swap the
-    // already-correct channels on sampling, producing a blue image.
+    // GL_TEXTURE_SWIZZLE_R/G/B/A: record AND forward to GLES.
+    // Two upload patterns exist:
+    // 1) GL_BGRA format: CPU swizzle converts BGRA→RGBA, then glTexImage2D/
+    //    glTexSubImage2D forces GLES swizzle to identity (overriding this
+    //    forwarded value) so sampling reads the correct RGBA.
+    // 2) GL_RGBA format + app swizzle (e.g. R=BLUE/B=RED): no CPU swizzle,
+    //    so the forwarded swizzle MUST reach GLES to swap channels at
+    //    sampling time. Without forwarding, R/B stay swapped → blue/green.
     if (pname == GL_TEXTURE_SWIZZLE_R || pname == GL_TEXTURE_SWIZZLE_G ||
         pname == GL_TEXTURE_SWIZZLE_B || pname == GL_TEXTURE_SWIZZLE_A) {
         GET_TEXTURE_OBJECT(target);
@@ -1692,12 +1694,10 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param) {
             }
             if (idx >= 0) {
                 tex->swizzle_param[idx] = param;
-                // Mark that this texture has been CPU-swizzled, so sampling
-                // must use identity swizzle on GLES side.
-                tex->bgraCpuSwizzled = true;
             }
         }
-        // Do NOT forward to GLES - GLES swizzle stays at identity.
+        GLES.glTexParameteri(target, pname, param);
+        CHECK_GL_ERROR
         return;
     }
 
@@ -1711,29 +1711,25 @@ void glTexParameteriv(GLenum target, GLenum pname, const GLint* params) {
     LOG_D("glTexParameteriv, target: %s, pname: %s", glEnumToString(target), glEnumToString(pname))
 
     if (pname == GL_TEXTURE_SWIZZLE_RGBA) {
-        LOG_D("find GL_TEXTURE_SWIZZLE_RGBA, now use glTexParameteri")
+        LOG_D("find GL_TEXTURE_SWIZZLE_RGBA, now forwarding to GLES")
         if (params) {
-            // Save the application's requested swizzle into tex->swizzle_param
-            // but do NOT forward to GLES. CPU-side BGRA->RGBA swizzle has
-            // already been applied during pixel upload, so the GLES texture
-            // stores correct RGBA data. Forwarding Xaero's R=BLUE/B=RED
-            // desktop-GL swizzle to GLES would re-swap the channels on
-            // sampling, producing a blue image.
+            // Record AND forward to GLES - see glTexParameteri for rationale.
             GET_TEXTURE_OBJECT(target);
             if (tex) {
                 tex->swizzle_param[0] = params[0];
                 tex->swizzle_param[1] = params[1];
                 tex->swizzle_param[2] = params[2];
                 tex->swizzle_param[3] = params[3];
-                tex->bgraCpuSwizzled = true;
             }
+            GLES.glTexParameteriv(target, pname, params);
+            CHECK_GL_ERROR
+            return;
         } else {
             LOG_E("glTexParameteriv: params is nullptr for GL_TEXTURE_SWIZZLE_RGBA")
         }
     } else if (pname == GL_TEXTURE_SWIZZLE_R || pname == GL_TEXTURE_SWIZZLE_G ||
                pname == GL_TEXTURE_SWIZZLE_B || pname == GL_TEXTURE_SWIZZLE_A) {
-        // Single-channel SWIZZLE via glTexParameteriv: same interception as
-        // glTexParameteri - record but don't forward to GLES.
+        // Single-channel SWIZZLE via glTexParameteriv: record and forward.
         if (params) {
             GET_TEXTURE_OBJECT(target);
             if (tex) {
@@ -1746,9 +1742,11 @@ void glTexParameteriv(GLenum target, GLenum pname, const GLint* params) {
                 }
                 if (idx >= 0) {
                     tex->swizzle_param[idx] = params[0];
-                    tex->bgraCpuSwizzled = true;
                 }
             }
+            GLES.glTexParameteriv(target, pname, params);
+            CHECK_GL_ERROR
+            return;
         }
     } else if (pname == GL_TEXTURE_MIN_FILTER && params) {
         // Same mipmap-filter downgrade as glTexParameteri - see comment there.
@@ -1788,7 +1786,7 @@ void glTexParameteriv(GLenum target, GLenum pname, const GLint* params) {
 void glTexParameterfv(GLenum target, GLenum pname, const GLfloat* params) {
     LOG()
     LOG_D("glTexParameterfv, target: %s, pname: %s", glEnumToString(target), glEnumToString(pname))
-    // Intercept GL_TEXTURE_SWIZZLE_R/G/B/A/RGBA - see glTexParameteri.
+    // GL_TEXTURE_SWIZZLE_*: record AND forward to GLES - see glTexParameteri.
     if (pname == GL_TEXTURE_SWIZZLE_R || pname == GL_TEXTURE_SWIZZLE_G ||
         pname == GL_TEXTURE_SWIZZLE_B || pname == GL_TEXTURE_SWIZZLE_A) {
         if (params) {
@@ -1803,9 +1801,10 @@ void glTexParameterfv(GLenum target, GLenum pname, const GLfloat* params) {
                 }
                 if (idx >= 0) {
                     tex->swizzle_param[idx] = (GLint)params[0];
-                    tex->bgraCpuSwizzled = true;
                 }
             }
+            GLES.glTexParameterfv(target, pname, params);
+            CHECK_GL_ERROR
         }
         return;
     }
@@ -1817,8 +1816,9 @@ void glTexParameterfv(GLenum target, GLenum pname, const GLfloat* params) {
                 tex->swizzle_param[1] = (GLint)params[1];
                 tex->swizzle_param[2] = (GLint)params[2];
                 tex->swizzle_param[3] = (GLint)params[3];
-                tex->bgraCpuSwizzled = true;
             }
+            GLES.glTexParameterfv(target, pname, params);
+            CHECK_GL_ERROR
         }
         return;
     }
