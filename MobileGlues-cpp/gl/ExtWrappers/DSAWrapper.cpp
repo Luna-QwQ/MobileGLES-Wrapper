@@ -9,6 +9,7 @@
 #include <cassert>
 #include "../texture.h"
 #include "../framebuffer.h"
+#include "../buffer.h"
 
 #define DEBUG 0
 
@@ -135,6 +136,14 @@ void glNamedBufferStorage(GLuint buffer, GLsizeiptr size, const void* data, GLbi
     glBufferStorage(GL_ARRAY_BUFFER, size, data, flags);
     CHECK_GL_ERROR;
     restoreTemporaryBufferBinding();
+    // DSA path uses GL_ARRAY_BUFFER internally, so the PBO shadow update in
+    // glBufferStorage (which only fires for GL_PIXEL_UNPACK_BUFFER) is skipped.
+    // Update the shadow here by buffer ID so that a subsequent
+    // glBindBuffer(GL_PIXEL_UNPACK_BUFFER, buffer) + glTexSubImage2D can read
+    // the CPU copy directly instead of falling back to glCopyBufferSubData
+    // (which may be incomplete/empty on the first frame, causing the brief
+    // colour glitch until the shadow is lazily established by a later map).
+    pbo_shadow_alloc(buffer, size, data);
 
     LOG_D("[DSA] Buffer %u stored with size %lld", buffer, size);
 }
@@ -152,6 +161,9 @@ void glNamedBufferData(GLuint buffer, GLsizeiptr size, const void* data, GLenum 
     glBufferData(GL_ARRAY_BUFFER, size, data, usage);
     CHECK_GL_ERROR;
     restoreTemporaryBufferBinding();
+    // Mirror glBufferData's PBO shadow sync (DSA path uses GL_ARRAY_BUFFER
+    // internally, so the shadow update inside glBufferData is skipped).
+    pbo_shadow_alloc(buffer, size, data);
 
     LOG_D("[DSA] Buffer %u data set with size %lld", buffer, size);
 }
@@ -168,6 +180,9 @@ void glNamedBufferSubData(GLuint buffer, GLintptr offset, GLsizeiptr size, const
     glBufferSubData(GL_ARRAY_BUFFER, offset, size, data);
     CHECK_GL_ERROR;
     restoreTemporaryBufferBinding();
+    // Mirror glBufferSubData's PBO shadow sync (DSA path uses GL_ARRAY_BUFFER
+    // internally, so the shadow update inside glBufferSubData is skipped).
+    pbo_shadow_subdata(buffer, offset, size, data);
 
     LOG_D("[DSA] Buffer %u sub-data set with size %lld at offset %lld", buffer, size, offset);
 }
