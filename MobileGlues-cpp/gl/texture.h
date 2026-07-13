@@ -190,6 +190,20 @@ public:
     GLsizei width;
     GLsizei height;
     GLsizei depth;
+    // Tracks whether glGenerateMipmap has been called for this texture since
+    // the last glTexImage*(level=0) reset. When false, mipmap min-filters
+    // (GL_*_MIPMAP_*) are downgraded to their non-mipmap counterparts in
+    // glTexParameteri, because GLES returns (0,0,0,1) when sampling an
+    // incomplete mipmap chain whereas desktop GL gracefully falls back to
+    // the base level.
+    bool hasMipmaps = false;
+    // Tracks whether this texture has had a CPU-side BGRA->RGBA swizzle
+    // applied during pixel upload. When true, the GLES-side texture stores
+    // correct RGBA data, so any GL_TEXTURE_SWIZZLE_R/B swap requested by the
+    // application (e.g. Xaero setting R=BLUE, B=RED on desktop GL to match
+    // its BGRA uploads) must NOT be forwarded to GLES - doing so would
+    // re-swap the already-correct channels and produce a blue image.
+    bool bgraCpuSwizzled = false;
     // Reverse mapping: set of TextureBindingSlot pointers (as uintptr_t) that
     // reference this object. Used by MarkTextureObjectForDeletion to avoid
     // iterating all 32 units × 24 targets (768 slots).

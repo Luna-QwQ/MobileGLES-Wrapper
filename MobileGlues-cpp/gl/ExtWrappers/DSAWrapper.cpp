@@ -9,6 +9,7 @@
 #include <cassert>
 #include "../texture.h"
 #include "../framebuffer.h"
+#include "../buffer.h"
 
 #define DEBUG 0
 
@@ -135,6 +136,14 @@ void glNamedBufferStorage(GLuint buffer, GLsizeiptr size, const void* data, GLbi
     glBufferStorage(GL_ARRAY_BUFFER, size, data, flags);
     CHECK_GL_ERROR;
     restoreTemporaryBufferBinding();
+    // DSA path uses GL_ARRAY_BUFFER internally, so the PBO shadow update in
+    // glBufferStorage (which only fires for GL_PIXEL_UNPACK_BUFFER) is skipped.
+    // Update the shadow here by buffer ID so that a subsequent
+    // glBindBuffer(GL_PIXEL_UNPACK_BUFFER, buffer) + glTexSubImage2D can read
+    // the CPU copy directly instead of falling back to glCopyBufferSubData
+    // (which may be incomplete/empty on the first frame, causing the brief
+    // colour glitch until the shadow is lazily established by a later map).
+    pbo_shadow_alloc(buffer, size, data);
 
     LOG_D("[DSA] Buffer %u stored with size %lld", buffer, size);
 }
@@ -152,6 +161,9 @@ void glNamedBufferData(GLuint buffer, GLsizeiptr size, const void* data, GLenum 
     glBufferData(GL_ARRAY_BUFFER, size, data, usage);
     CHECK_GL_ERROR;
     restoreTemporaryBufferBinding();
+    // Mirror glBufferData's PBO shadow sync (DSA path uses GL_ARRAY_BUFFER
+    // internally, so the shadow update inside glBufferData is skipped).
+    pbo_shadow_alloc(buffer, size, data);
 
     LOG_D("[DSA] Buffer %u data set with size %lld", buffer, size);
 }
@@ -168,6 +180,9 @@ void glNamedBufferSubData(GLuint buffer, GLintptr offset, GLsizeiptr size, const
     glBufferSubData(GL_ARRAY_BUFFER, offset, size, data);
     CHECK_GL_ERROR;
     restoreTemporaryBufferBinding();
+    // Mirror glBufferSubData's PBO shadow sync (DSA path uses GL_ARRAY_BUFFER
+    // internally, so the shadow update inside glBufferSubData is skipped).
+    pbo_shadow_subdata(buffer, offset, size, data);
 
     LOG_D("[DSA] Buffer %u sub-data set with size %lld at offset %lld", buffer, size, offset);
 }
@@ -236,6 +251,20 @@ void* glMapNamedBuffer(GLuint buffer, GLenum access) {
         LOG_W("[DSA] Invalid buffer ID for glMapNamedBuffer");
         return nullptr;
     }
+    // PBO shadow path: if this buffer has a CPU shadow (created via
+    // glNamedBufferData/glNamedBufferStorage), redirect write maps to the
+    // shadow so subsequent glTexSubImage2D BGRA swizzle reads correct data.
+    // Without this, DSA-mapped PBO writes bypass the shadow (the non-DSA
+    // glMapBufferRange shadow path only triggers for GL_PIXEL_UNPACK_BUFFER),
+    // leaving the shadow stale and causing edge color blocks when Xaero
+    // updates individual tiles via DSA.
+    if (pbo_shadow_get(buffer) && (access == GL_WRITE_ONLY || access == GL_READ_WRITE)) {
+        GLsizeiptr sz = pbo_shadow_size(buffer);
+        if (sz > 0) {
+            void* shadowPtr = pbo_shadow_map_write(buffer, 0, sz);
+            if (shadowPtr) return shadowPtr;
+        }
+    }
     temporarilyBindBuffer(buffer);
     void* mappedData = glMapBuffer(GL_ARRAY_BUFFER, access);
     CHECK_GL_ERROR;
@@ -258,6 +287,13 @@ GLvoid* glMapNamedBufferRange(GLuint buffer, GLintptr offset, GLsizeiptr length,
         LOG_W("[DSA] Invalid parameters for glMapNamedBufferRange");
         return nullptr;
     }
+    // PBO shadow path: redirect write maps to the CPU shadow so the BGRA
+    // swizzle in texture.cpp reads up-to-date data. See glMapNamedBuffer
+    // for the full rationale.
+    if (pbo_shadow_get(buffer) && (access & GL_MAP_WRITE_BIT)) {
+        void* shadowPtr = pbo_shadow_map_write(buffer, offset, length);
+        if (shadowPtr) return shadowPtr;
+    }
     temporarilyBindBuffer(buffer);
     void* mappedData = glMapBufferRange(GL_ARRAY_BUFFER, offset, length, access);
     CHECK_GL_ERROR;
@@ -279,6 +315,20 @@ GLboolean glUnmapNamedBuffer(GLuint buffer) {
         LOG_W("[DSA] Invalid buffer ID for glUnmapNamedBuffer");
         return GL_FALSE;
     }
+    // PBO shadow path: if this buffer has a shadow, sync the shadow data
+    // to the GLES buffer via glBufferSubData (the GLES buffer was never
+    // mapped when we returned a shadow pointer from glMapNamedBufferRange).
+    if (pbo_shadow_get(buffer)) {
+        GLsizeiptr sz = pbo_shadow_size(buffer);
+        if (sz > 0) {
+            temporarilyBindBuffer(buffer);
+            GLES.glBufferSubData(GL_ARRAY_BUFFER, 0, sz, pbo_shadow_get(buffer));
+            CHECK_GL_ERROR;
+            restoreTemporaryBufferBinding();
+        }
+        pbo_shadow_unmap(buffer);
+        return GL_TRUE;
+    }
     temporarilyBindBuffer(buffer);
     GLboolean result = glUnmapBuffer(GL_ARRAY_BUFFER);
     CHECK_GL_ERROR;
@@ -299,6 +349,15 @@ void glFlushMappedNamedBufferRange(GLuint buffer, GLintptr offset, GLsizeiptr le
     if (buffer == 0 || length <= 0 || offset < 0) {
         LOG_W("[DSA] Invalid parameters for glFlushMappedNamedBufferRange");
         // return;
+    }
+    // PBO shadow path: flush the mapped region from shadow to GLES so
+    // glTexSubImage2D can read the updated data even before unmap.
+    if (pbo_shadow_get(buffer)) {
+        temporarilyBindBuffer(buffer);
+        GLES.glBufferSubData(GL_ARRAY_BUFFER, offset, length, pbo_shadow_get(buffer) + offset);
+        CHECK_GL_ERROR;
+        restoreTemporaryBufferBinding();
+        return;
     }
     temporarilyBindBuffer(buffer);
     glFlushMappedBufferRange(GL_ARRAY_BUFFER, offset, length);

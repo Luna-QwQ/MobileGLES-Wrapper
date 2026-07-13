@@ -34,6 +34,53 @@ extern "C"
 
     GLuint find_bound_buffer(GLenum key);
 
+    void set_bound_buffer_by_target(GLenum target, GLuint buffer);
+
+    // --- PBO CPU shadow data (for BGRA swizzle without glMapBufferRange read) ---
+    // MobileGL-DirectGLES keeps a CPU shadow copy of every PBO; we adopt the
+    // same design but only for GL_PIXEL_UNPACK_BUFFER. This lets us do CPU-side
+    // BGRA->RGBA swizzle in glTexSubImage2D/glTexImage2D without mapping the
+    // source PBO for reading (which fails on many GLES drivers).
+    void pbo_shadow_alloc(GLuint pbo, GLsizeiptr size, const void* data);
+    void pbo_shadow_subdata(GLuint pbo, GLintptr offset, GLsizeiptr size, const void* data);
+    void pbo_shadow_delete(GLuint pbo);
+    // Returns a pointer to the PBO's CPU shadow data, or nullptr if none.
+    // The pointer is valid until the next PBO operation on this buffer.
+    const unsigned char* pbo_shadow_get(GLuint pbo);
+    // Returns the size of the PBO's CPU shadow data, or 0 if none.
+    GLsizeiptr pbo_shadow_size(GLuint pbo);
+    // Combined lookup: returns {ptr, size} in a single locked lookup.
+    const unsigned char* pbo_shadow_get_ptr_size(GLuint pbo, GLsizeiptr* outSize);
+    // If the PBO is currently write-mapped, returns its shadow base pointer
+    // and the mapped [offset, length) range. Returns false if not mapped.
+    bool pbo_shadow_get_mapped_range(GLuint pbo, const unsigned char** outData,
+                                      GLintptr* outOffset, GLsizeiptr* outLength);
+    // For glMapBufferRange(GL_MAP_WRITE_BIT): returns a writable CPU pointer
+    // into the shadow buffer at `offset`. Caller must call pbo_shadow_unmap
+    // to flush the shadow back to GLES.
+    void* pbo_shadow_map_write(GLuint pbo, GLintptr offset, GLsizeiptr length);
+    void pbo_shadow_unmap(GLuint pbo);
+
+    // --- Thread-local scratch buffer cache ---
+    // Texture-upload swizzle path needs a tight temporary buffer per upload
+    // (size = width*height*depth*4). Repeatedly calling malloc/free on every
+    // glTexSubImage2D is a hot-path bottleneck. This cache keeps a per-thread
+    // growable buffer that is reused across calls - acquires returns {ptr,
+    // capacity}; the caller uses min(requestedSize, capacity) bytes and the
+    // memory is recycled on the next acquire. NOT thread-safe across threads;
+    // each thread gets its own slot.
+    struct MgScratchBuffer {
+        void* ptr = nullptr;
+        size_t capacity = 0;
+    };
+    MgScratchBuffer* mg_acquire_scratch_buffer();
+    // Returns true if `ptr` points into the calling thread's scratch buffer.
+    // Use after swizzle_pixels_for_unpack to skip free() for scratch-owned
+    // memory (the scratch buffer is reused on the next call).
+    inline bool mg_scratch_owns(const void* ptr) {
+        return ptr != nullptr && ptr == mg_acquire_scratch_buffer()->ptr;
+    }
+
     GLuint find_bound_ssbo_indexed(GLuint index);
 
     GLuint gen_array();

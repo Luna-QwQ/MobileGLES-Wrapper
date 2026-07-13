@@ -696,3 +696,209 @@ bool pixel_convert(const GLvoid* src, GLvoid** dst, GLuint width, GLuint height,
 
     return true;
 }
+
+// ============================================================================
+// Section: BGRA <=> RGBA Swizzle Helpers
+//
+// Implements the in-place 8-bit-per-channel swizzle and the lookup helpers
+// that decide whether a swizzle is needed for an upload (unpack) or readback
+// (pack) operation. The semantics mirror the MobileGL-DirectGLES branch's
+// MG_Util/Texture/PixelStoreProcessor: the swizzle table describes, for each
+// output byte position, which source byte to copy.
+//
+// Memory layout reference (little-endian, the only target we ship to):
+//   GL_BGRA + GL_UNSIGNED_BYTE                => [B, G, R, A]
+//   GL_BGRA + GL_UNSIGNED_INT_8_8_8_8         => [A, R, G, B]   (msb=B)
+//   GL_BGRA + GL_UNSIGNED_INT_8_8_8_8_REV     => [B, G, R, A]   (lsb=B)
+//   GL_RGBA + GL_UNSIGNED_BYTE                => [R, G, B, A]
+//   GL_RGBA + GL_UNSIGNED_INT_8_8_8_8         => [A, B, G, R]   (msb=R)
+//   GL_RGBA + GL_UNSIGNED_INT_8_8_8_8_REV     => [R, G, B, A]   (lsb=R)
+//
+// GLES only accepts GL_RGBA + GL_UNSIGNED_BYTE, so we always feed it that and
+// do the channel rearrangement on the CPU.
+// ============================================================================
+
+void ProcessColorSwizzle(void* data, GLuint pixelCount, const unsigned char* swizzle, int channels) {
+    if (!data || !swizzle || pixelCount == 0 || channels <= 0 || channels > 4) return;
+    unsigned char* bytes = static_cast<unsigned char*>(data);
+    unsigned char scratch[4];
+    for (GLuint i = 0; i < pixelCount; ++i) {
+        unsigned char* pixel = bytes + i * channels;
+        for (int ch = 0; ch < channels; ++ch) {
+            unsigned char s = swizzle[ch];
+            switch (s) {
+                case SWIZZLE_RED:   scratch[ch] = pixel[0]; break;
+                case SWIZZLE_GREEN: scratch[ch] = pixel[1]; break;
+                case SWIZZLE_BLUE:  scratch[ch] = pixel[2]; break;
+                case SWIZZLE_ALPHA: scratch[ch] = pixel[3]; break;
+                case SWIZZLE_ZERO:  scratch[ch] = 0x00;     break;
+                case SWIZZLE_ONE:   scratch[ch] = 0xFF;     break;
+                default:            scratch[ch] = 0xBD;     break;
+            }
+        }
+        for (int ch = 0; ch < channels; ++ch) pixel[ch] = scratch[ch];
+    }
+}
+
+// Combined copy + 4-channel byte swizzle in a single pass.
+//
+// Detects the two most common swizzle patterns emitted by
+// get_rgba8_unpack_swizzle and dispatches to a tight specialised loop:
+//   - BGRA->RGBA (R/B swap): {Blue, Green, Red, Alpha}
+//   - GL_UNSIGNED_INT_8_8_8_8 BGRA->RGBA: {Green, Blue, Alpha, Red}
+// Both avoid the per-channel switch of the generic in-place swizzle and
+// let the compiler vectorise the inner loop. Falls back to the generic
+// in-place algorithm (copy + ProcessColorSwizzle) for arbitrary swizzles.
+//
+// `dstStride`/`srcStride` are row strides in bytes. `srcImageStride` is the
+// 3D image stride in bytes; for 2D (depth==1) it is ignored.
+void CopyAndSwizzleRGBA8(void* dst, GLsizei dstStride,
+                          const void* src, GLsizei srcStride,
+                          GLsizei width, GLsizei height, GLsizei depth,
+                          GLsizei srcImageStride,
+                          const unsigned char swizzle[4]) {
+    if (!dst || !src || width <= 0 || height <= 0 || depth <= 0) return;
+    const unsigned char* s = static_cast<const unsigned char*>(src);
+    unsigned char* d = static_cast<unsigned char*>(dst);
+    const GLsizei rowBytes = width * 4;
+
+    // Fast path: BGRA -> RGBA = swap bytes 0 and 2, keep G and A.
+    // swizzle == {SWIZZLE_BLUE, SWIZZLE_GREEN, SWIZZLE_RED, SWIZZLE_ALPHA}
+    if (swizzle[0] == SWIZZLE_BLUE  && swizzle[1] == SWIZZLE_GREEN &&
+        swizzle[2] == SWIZZLE_RED   && swizzle[3] == SWIZZLE_ALPHA) {
+        // Hint: pointers are 4-byte aligned (each pixel is 4 bytes), which
+        // helps the compiler vectorise the inner loop.
+        const unsigned char* sp = static_cast<const unsigned char*>(__builtin_assume_aligned(s, 4));
+        unsigned char* dp = static_cast<unsigned char*>(__builtin_assume_aligned(d, 4));
+        for (GLsizei z = 0; z < depth; ++z) {
+            const unsigned char* srcRow = sp;
+            unsigned char* dstRow = dp;
+            for (GLsizei y = 0; y < height; ++y) {
+                for (GLsizei i = 0; i < width; ++i) {
+                    const unsigned char* p = srcRow + i * 4;
+                    unsigned char* o = dstRow + i * 4;
+                    unsigned char b = p[0];   // B
+                    o[1] = p[1];              // G
+                    o[0] = p[2];              // R <- swap
+                    o[2] = b;                 // B <- swap
+                    o[3] = p[3];              // A
+                }
+                srcRow += srcStride;
+                dstRow += dstStride;
+            }
+            sp += srcImageStride;
+        }
+        return;
+    }
+
+    // Fast path: GL_UNSIGNED_INT_8_8_8_8 BGRA -> RGBA.
+    // swizzle == {SWIZZLE_GREEN, SWIZZLE_BLUE, SWIZZLE_ALPHA, SWIZZLE_RED}
+    // Memory layout [A,R,G,B] -> output [R,G,B,A]
+    if (swizzle[0] == SWIZZLE_GREEN && swizzle[1] == SWIZZLE_BLUE &&
+        swizzle[2] == SWIZZLE_ALPHA && swizzle[3] == SWIZZLE_RED) {
+        const unsigned char* sp = static_cast<const unsigned char*>(__builtin_assume_aligned(s, 4));
+        unsigned char* dp = static_cast<unsigned char*>(__builtin_assume_aligned(d, 4));
+        for (GLsizei z = 0; z < depth; ++z) {
+            const unsigned char* srcRow = sp;
+            unsigned char* dstRow = dp;
+            for (GLsizei y = 0; y < height; ++y) {
+                for (GLsizei i = 0; i < width; ++i) {
+                    const unsigned char* p = srcRow + i * 4;
+                    unsigned char* o = dstRow + i * 4;
+                    o[0] = p[1];   // R
+                    o[1] = p[2];   // G
+                    o[2] = p[3];   // B
+                    o[3] = p[0];   // A
+                }
+                srcRow += srcStride;
+                dstRow += dstStride;
+            }
+            sp += srcImageStride;
+        }
+        return;
+    }
+
+    // Generic fallback: copy row-by-row then in-place swizzle.
+    for (GLsizei z = 0; z < depth; ++z) {
+        const unsigned char* srcRow = s;
+        unsigned char* dstRow = d;
+        for (GLsizei y = 0; y < height; ++y) {
+            memcpy(dstRow, srcRow, rowBytes);
+            ProcessColorSwizzle(dstRow, static_cast<GLuint>(width), swizzle, 4);
+            srcRow += srcStride;
+            dstRow += dstStride;
+        }
+        s += srcImageStride;
+    }
+}
+
+bool get_rgba8_unpack_swizzle(GLenum srcFormat, GLenum srcType, unsigned char out[4]) {
+    // GL_BGRA sources: the in-memory byte order differs from GL_RGBA, so a
+    // channel rearrangement is required before GLES accepts the data as
+    // GL_RGBA + GL_UNSIGNED_BYTE.
+    if (srcFormat == GL_BGRA) {
+        if (srcType == GL_UNSIGNED_INT_8_8_8_8) {
+            // [A, R, G, B] -> [R, G, B, A]
+            out[0] = SWIZZLE_GREEN;  // R <- src.R   (src byte 1)
+            out[1] = SWIZZLE_BLUE;   // G <- src.G   (src byte 2)
+            out[2] = SWIZZLE_ALPHA;  // B <- src.B   (src byte 3)
+            out[3] = SWIZZLE_RED;    // A <- src.A   (src byte 0)
+            return true;
+        }
+        // GL_UNSIGNED_BYTE: [B, G, R, A] -> [R, G, B, A]  (swap R/B)
+        // GL_UNSIGNED_INT_8_8_8_8_REV: [B, G, R, A] -> [R, G, B, A]  (swap R/B)
+        out[0] = SWIZZLE_BLUE;
+        out[1] = SWIZZLE_GREEN;
+        out[2] = SWIZZLE_RED;
+        out[3] = SWIZZLE_ALPHA;
+        return true;
+    }
+
+    if (srcFormat == GL_RGBA) {
+        if (srcType == GL_UNSIGNED_INT_8_8_8_8) {
+            // [A, B, G, R] -> [R, G, B, A]
+            out[0] = SWIZZLE_ALPHA;
+            out[1] = SWIZZLE_BLUE;
+            out[2] = SWIZZLE_GREEN;
+            out[3] = SWIZZLE_RED;
+            return true;
+        }
+        // GL_UNSIGNED_BYTE: already [R, G, B, A] - no work needed.
+        // GL_UNSIGNED_INT_8_8_8_8_REV: already [R, G, B, A] - no work needed.
+    }
+
+    return false;
+}
+
+bool get_rgba_pack_swizzle(GLenum dstFormat, GLenum dstType, unsigned char out[4]) {
+    // Start from the identity mapping; the readback always produces
+    // [R, G, B, A] in memory.
+    out[0] = SWIZZLE_RED;
+    out[1] = SWIZZLE_GREEN;
+    out[2] = SWIZZLE_BLUE;
+    out[3] = SWIZZLE_ALPHA;
+
+    bool needSwizzle = false;
+
+    if (dstFormat == GL_BGRA) {
+        // Want [B, G, R, A] from [R, G, B, A]: swap R/B.
+        out[0] = SWIZZLE_BLUE;
+        out[1] = SWIZZLE_GREEN;
+        out[2] = SWIZZLE_RED;
+        out[3] = SWIZZLE_ALPHA;
+        needSwizzle = true;
+    }
+
+    if (dstType == GL_UNSIGNED_INT_8_8_8_8) {
+        // _REV variants are byte-for-byte identical to GL_UNSIGNED_BYTE on
+        // little-endian, but the non-REV packed types reverse the byte order.
+        // Reverse the swizzle to write [component4, component3, component2, component1]
+        // (i.e. msb-first) in memory.
+        unsigned char tmp;
+        tmp = out[0]; out[0] = out[3]; out[3] = tmp;
+        tmp = out[1]; out[1] = out[2]; out[2] = tmp;
+        needSwizzle = true;
+    }
+
+    return needSwizzle;
+}
