@@ -1028,6 +1028,16 @@ void glBindTexture(GLenum target, GLuint texture) {
 
     const int currentUnitIndex = GetCurrentTextureUnitIndex();
 
+    // Short-circuit for GL_TEXTURE_2D: if the same texture is already bound to
+    // this unit, skip both the GLES call and the bookkeeping.
+    // g_tracked_tex2d_binding is kept in sync with GLES state by:
+    //  - glBindTexture (here), glDeleteTextures (invalidates to 0),
+    //  - FSR1's GLStateGuard (restores + syncs cache on scope exit).
+    if (target == GL_TEXTURE_2D &&
+        g_tracked_tex2d_binding[currentUnitIndex] == texture) [[likely]] {
+        return;
+    }
+
     GLES.glBindTexture(target, texture);
     CHECK_GL_ERROR_NO_INIT
 
@@ -1084,9 +1094,15 @@ void glActiveTexture(GLenum texture) {
         return;
     }
 
-    set_gl_state_current_tex_unit(texture - GL_TEXTURE0);
+    // Short-circuit: same active unit already selected, skip the GLES call.
+    // GLState.currentTexUnit is only mutated here (via set_gl_state_current_tex_unit)
+    // and synced by FSR1's GLStateGuard destructor.
+    const GLuint unit = texture - GL_TEXTURE0;
+    if (GLState.currentTexUnit == (GLint)unit) [[likely]] return;
+
+    set_gl_state_current_tex_unit(unit);
     GLES.glActiveTexture(texture);
-    ActivateTextureUnit(texture - GL_TEXTURE0);
+    ActivateTextureUnit(unit);
     CHECK_GL_ERROR
 }
 

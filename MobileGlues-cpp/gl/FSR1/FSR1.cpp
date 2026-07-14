@@ -14,13 +14,19 @@ extern GLuint g_tracked_tex2d_binding[32];
 
 #define DEBUG 0
 
+// CPU-side viewport cache: avoids redundant GLES.glViewport calls and
+// GPU round-trips for glGetIntegerv(GL_VIEWPORT) in GLStateGuard.
+// Kept in sync by glViewport() and GLStateGuard's destructor.
+static GLint g_viewport_cache[4] = {0, 0, 0, 0}; // x, y, w, h
+
 struct GLStateGuard {
     GLint prevProgram;
     GLint prevVAO;
     GLint prevArrayBuffer;
     GLint prevActiveTexture;
     GLint prevTexture;
-    // GLint prevViewport[4];
+    GLint prevTextureUnit0; // GL_TEXTURE_2D on GL_TEXTURE0 (ApplyFSR binds there)
+    GLint prevViewport[4];
     GLint prevReadFBO;
     GLint prevDrawFBO;
     GLint prevRenderbuffer;
@@ -33,7 +39,12 @@ struct GLStateGuard {
         prevActiveTexture = GL_TEXTURE0 + GLState.currentTexUnit;
         GLES.glActiveTexture(prevActiveTexture);
         prevTexture = g_tracked_tex2d_binding[GLState.currentTexUnit];
-        // GLES.glGetIntegerv(GL_VIEWPORT, prevViewport);
+        prevTextureUnit0 = g_tracked_tex2d_binding[0];
+        // Read viewport from CPU cache (no GPU query)
+        prevViewport[0] = g_viewport_cache[0];
+        prevViewport[1] = g_viewport_cache[1];
+        prevViewport[2] = g_viewport_cache[2];
+        prevViewport[3] = g_viewport_cache[3];
         prevReadFBO = GLState.framebuffer.readFBO;
         prevDrawFBO = GLState.framebuffer.drawFBO;
         prevRenderbuffer = 0; // Not tracked in CPU cache, skip
@@ -45,10 +56,25 @@ struct GLStateGuard {
         GLES.glBindBuffer(GL_ARRAY_BUFFER, prevArrayBuffer);
         GLES.glActiveTexture(prevActiveTexture);
         GLES.glBindTexture(GL_TEXTURE_2D, prevTexture);
-        // GLES.glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
+        // Restore unit 0's GL_TEXTURE_2D binding (ApplyFSR binds g_renderTexture to unit 0)
+        GLES.glActiveTexture(GL_TEXTURE0);
+        GLES.glBindTexture(GL_TEXTURE_2D, prevTextureUnit0);
+        GLES.glActiveTexture(prevActiveTexture);
+        GLES.glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
         GLES.glBindRenderbuffer(GL_RENDERBUFFER, prevRenderbuffer);
         GLES.glBindFramebuffer(GL_READ_FRAMEBUFFER, prevReadFBO);
         GLES.glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDrawFBO);
+        // Sync CPU-side cache with the restored GLES state so that
+        // short-circuit fast paths in the wrapper functions remain valid.
+        GLState.shader.currentProgram = prevProgram;
+        GLState.currentProgram = prevProgram;
+        GLState.currentTexUnit = prevActiveTexture - GL_TEXTURE0;
+        g_tracked_tex2d_binding[GLState.currentTexUnit] = prevTexture;
+        g_tracked_tex2d_binding[0] = prevTextureUnit0;
+        g_viewport_cache[0] = prevViewport[0];
+        g_viewport_cache[1] = prevViewport[1];
+        g_viewport_cache[2] = prevViewport[2];
+        g_viewport_cache[3] = prevViewport[3];
     }
 };
 
@@ -398,6 +424,17 @@ void glViewport(GLint x, GLint y, GLsizei w, GLsizei h) {
         FSR1_Context::g_pendingHeight = h;
         FSR1_Context::g_resolutionChanged = true;
     }
+
+    // Short-circuit: same viewport already set on GLES, skip the driver call.
+    // g_viewport_cache is kept in sync by this function and GLStateGuard.
+    if (g_viewport_cache[0] == x && g_viewport_cache[1] == y &&
+        g_viewport_cache[2] == w && g_viewport_cache[3] == h) [[likely]] {
+        return;
+    }
+    g_viewport_cache[0] = x;
+    g_viewport_cache[1] = y;
+    g_viewport_cache[2] = w;
+    g_viewport_cache[3] = h;
 
     GLES.glViewport(x, y, w, h);
 }
