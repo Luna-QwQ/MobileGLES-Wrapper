@@ -20,10 +20,7 @@
 // Supported conversions:
 //   - Format size queries (gl_sizeof, pixel_sizeof)
 //   - Packed type detection (is_type_packed)
-//   - Color channel layout mapping (get_color_map)
-//   - Full pixel data conversion (pixel_convert):
-//       BGRA ↔ RGBA, LUMINANCE → RGBA/RGB, BGR → RGB/RGBA,
-//       RGBA/BGRA → RGB565/RGBA5551/RGBA4444, unpacked → packed, etc.
+//   - BGRA <-> RGBA swizzle helpers for texture upload / readback
 // ============================================================================
 
 #include "pixel.h"

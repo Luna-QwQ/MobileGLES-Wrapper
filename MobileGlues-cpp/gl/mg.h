@@ -171,12 +171,6 @@ inline bool HasGLError() { return GLState.errorState.HasGLError(); }
 inline void ClearGLErrors() { GLState.errorState.Clear(); }
 
 // ============================================================================
-// State initialization (called from mg.cpp)
-// ============================================================================
-
-void StateInit();
-
-// ============================================================================
 // Global texture unit count (queried from GLES)
 // ============================================================================
 

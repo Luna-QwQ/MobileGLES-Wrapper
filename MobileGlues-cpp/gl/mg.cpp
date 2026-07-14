@@ -11,16 +11,3 @@
 #include "../gles/loader.h"
 
 int MG_MAX_COMBINED_TEXTURE_IMAGE_UNITS = 96;
-
-void StateInit()
-{
-    GLState.Initialize();
-
-    // Query max texture units from the actual GLES implementation
-    GLint maxTexUnits = 96;
-    glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &maxTexUnits);
-    MG_MAX_COMBINED_TEXTURE_IMAGE_UNITS = maxTexUnits;
-    STATE_LOG("StateInit: max texture units = %d, ES version = %d.%d",
-              MG_MAX_COMBINED_TEXTURE_IMAGE_UNITS,
-              GLState.esVersion / 10, GLState.esVersion % 10);
-}
