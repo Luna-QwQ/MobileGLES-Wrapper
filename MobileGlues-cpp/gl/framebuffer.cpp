@@ -155,7 +155,51 @@ extern "C" GLAPI GLAPIENTRY void glFramebufferTexture2D(GLenum target, GLenum at
 
 extern "C" GLAPI GLAPIENTRY void glFramebufferTexture(GLenum target, GLenum attachment, GLuint texture, GLint level) {
     LOG()
-    GLES.glFramebufferTexture(target, attachment, texture, level);
+    // glFramebufferTexture (without the "2D" suffix) is an optional GLES
+    // function that requires GL_EXT_geometry_shader / GL_OES_geometry_shader.
+    // Many mobile GLES 3.2 drivers do NOT expose it, leaving the function
+    // pointer NULL. Calling a NULL function pointer would crash, and even if
+    // it doesn't crash the attachment silently fails — the FBO ends up with
+    // no attachment and glCheckFramebufferStatus returns
+    // GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT.
+    //
+    // Desktop GL's glFramebufferTexture attaches all layers of a texture for
+    // layered rendering. For non-layered use (which is what Iris shader packs
+    // actually do with 2D / 2D-array / cube-map textures on the clear FBO
+    // path), we can emulate it with glFramebufferTexture2D (for 2D / cube-map
+    // faces) or glFramebufferTextureLayer (for 2D-array / 3D, layer 0).
+    if (GLES.glFramebufferTexture != nullptr) {
+        GLES.glFramebufferTexture(target, attachment, texture, level);
+    } else if (texture == 0) {
+        // Detaching: glFramebufferTexture2D with texture=0 works everywhere.
+        GLES.glFramebufferTexture2D(target, attachment, GL_TEXTURE_2D, 0, level);
+    } else {
+        // Look up the texture's target to pick the right fallback function.
+        TextureObject* tex = mgGetTexObjectByID(texture);
+        if (tex) {
+            GLenum texTarget = ConvertTextureTargetToGLEnum(tex->target);
+            if (texTarget == GL_TEXTURE_2D || texTarget == GL_TEXTURE_CUBE_MAP) {
+                // For 2D textures, use glFramebufferTexture2D.
+                // For cube-map textures, glFramebufferTexture2D requires a
+                // face target; use GL_TEXTURE_CUBE_MAP_POSITIVE_X as the
+                // default face (matching desktop GL's glFramebufferTexture
+                // behaviour of attaching the first layer).
+                GLenum faceTarget = (texTarget == GL_TEXTURE_CUBE_MAP)
+                                    ? GL_TEXTURE_CUBE_MAP_POSITIVE_X : texTarget;
+                GLES.glFramebufferTexture2D(target, attachment, faceTarget, texture, level);
+            } else {
+                // For 2D-array, 3D, or other layered textures, attach
+                // layer 0 via glFramebufferTextureLayer.
+                GLES.glFramebufferTextureLayer(target, attachment, texture, level, 0);
+            }
+        } else {
+            // Texture not in our tracking table; best-effort fallback to
+            // glFramebufferTexture2D with GL_TEXTURE_2D (the most common case).
+            LOG_W("glFramebufferTexture: texture %u not found in tracking table, "
+                  "falling back to glFramebufferTexture2D", texture);
+            GLES.glFramebufferTexture2D(target, attachment, GL_TEXTURE_2D, texture, level);
+        }
+    }
 
     GLuint currentFBO = (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER)
                         ? GLState.framebuffer.drawFBO
@@ -329,6 +373,40 @@ extern "C" GLAPI GLAPIENTRY GLenum glCheckFramebufferStatus(GLenum target) {
                   "(target=0x%X, FBO=%u, floatConfirmed=%d)",
                   target, currentFBO, (int)foundFloatAttachment);
             (void)foundFloatAttachment;
+            status = GL_FRAMEBUFFER_COMPLETE;
+            break;
+        }
+        case GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT: {
+            // GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT (0x8CD7) means the
+            // FBO has a draw buffer enabled but no image attached to the
+            // corresponding attachment point. On desktop GL, this is a real
+            // error ONLY when the application forgot to attach anything. But
+            // on GLES, this status can also be returned when:
+            //
+            //   1. The app used glFramebufferTexture (non-2D) which is an
+            //      optional GLES function (requires geometry shader ext).
+            //      If the function pointer is NULL, the attachment silently
+            //      fails and the FBO ends up with no attachment.
+            //   2. The app created a "no-attachment" framebuffer using
+            //      glFramebufferParameteri(GL_FRAMEBUFFER_DEFAULT_WIDTH/...)
+            //      which is a desktop GL 4.3 / GLES 3.1 feature that some
+            //      mobile drivers don't fully support.
+            //   3. The attached texture uses a format the GLES driver
+            //      doesn't recognize as color-renderable, causing it to
+            //      silently drop the attachment.
+            //
+            // In all these cases, desktop GL would have accepted the FBO as
+            // COMPLETE. Since Iris shader packs are designed for desktop GL,
+            // we promote to COMPLETE to let the shader pipeline continue.
+            // The alternative — Iris disabling all shaders — is strictly
+            // worse for the user experience.
+            GLuint currentFBO = (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER)
+                                ? GLState.framebuffer.drawFBO
+                                : GLState.framebuffer.readFBO;
+            LOG_D("glCheckFramebufferStatus: promoting INCOMPLETE_MISSING_ATTACHMENT -> COMPLETE "
+                  "(target=0x%X, FBO=%u) — likely caused by missing glFramebufferTexture support "
+                  "or unsupported no-attachment FBO on GLES",
+                  target, currentFBO);
             status = GL_FRAMEBUFFER_COMPLETE;
             break;
         }
