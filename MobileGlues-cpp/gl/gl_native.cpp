@@ -311,8 +311,44 @@ NATIVE_FUNCTION_HEAD(void, glProgramUniformMatrix4x3fv, GLuint program, GLint lo
 // State Management
 // ============================================================================
 
-NATIVE_FUNCTION_HEAD(void, glEnable, GLenum cap) NATIVE_FUNCTION_END_NO_RETURN(void, glEnable, cap)
-NATIVE_FUNCTION_HEAD(void, glDisable, GLenum cap) NATIVE_FUNCTION_END_NO_RETURN(void, glDisable, cap)
+// --- Redundant-state-skip cache for high-frequency state setters ---
+// These wrappers are the only callers of the corresponding GLES.glXxx entry
+// points in the codebase (verified: no direct GLES.glEnable / glDisable /
+// glDepthFunc / etc. calls exist elsewhere), so the cache never goes stale.
+// FSR1's GLStateGuard does not touch any of this state either.
+
+// glEnable/glDisable: tri-state per cap (0=unknown, 1=enabled, 2=disabled).
+static UnorderedMap<GLenum, uint8_t> g_cap_state;
+
+// Scalar state caches. 0 is a safe "unknown" sentinel for GLenum fields
+// (all valid GL enum values are >= 0x0100). For GLboolean/int fields where
+// 0 is a valid value, an explicit init flag is used.
+static GLenum     g_depthFunc = 0;        // 0 = unknown
+static GLenum     g_cullFace  = 0;        // 0 = unknown
+static GLenum     g_frontFace = 0;        // 0 = unknown
+static GLenum     g_blendSfactor = 0;     // 0 = unknown (checked together with dfactor)
+static GLenum     g_blendDfactor = 0;
+static GLboolean  g_depthMask = GL_TRUE;
+static bool       g_depthMaskInit = false;
+static GLint      g_scissor[4] = {0, 0, 0, 0};
+static bool       g_scissorInit = false;
+static GLboolean  g_colorMask[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
+static bool       g_colorMaskInit = false;
+
+extern "C" GLAPI GLAPIENTRY void glEnableARB(GLenum cap) __attribute__((alias("glEnable")));
+extern "C" GLAPI GLAPIENTRY void glEnable(GLenum cap) {
+    auto& s = g_cap_state[cap];
+    if (s == 1) [[likely]] return;
+    s = 1;
+    GLES.glEnable(cap);
+}
+extern "C" GLAPI GLAPIENTRY void glDisableARB(GLenum cap) __attribute__((alias("glDisable")));
+extern "C" GLAPI GLAPIENTRY void glDisable(GLenum cap) {
+    auto& s = g_cap_state[cap];
+    if (s == 2) [[likely]] return;
+    s = 2;
+    GLES.glDisable(cap);
+}
 NATIVE_FUNCTION_HEAD(void, glEnablei, GLenum target, GLuint index) NATIVE_FUNCTION_END_NO_RETURN(void, glEnablei, target,index)
 NATIVE_FUNCTION_HEAD(void, glDisablei, GLenum target, GLuint index) NATIVE_FUNCTION_END_NO_RETURN(void, glDisablei, target,index)
 NATIVE_FUNCTION_HEAD(GLboolean, glIsEnabled, GLenum cap) NATIVE_FUNCTION_END(GLboolean, glIsEnabled, cap)
@@ -363,13 +399,27 @@ extern "C" GLAPI GLAPIENTRY void glDispatchComputeIndirect(GLintptr indirect) {
 NATIVE_FUNCTION_HEAD(void, glBlendColor, GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendColor, red,green,blue,alpha)
 NATIVE_FUNCTION_HEAD(void, glBlendEquation, GLenum mode) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendEquation, mode)
 NATIVE_FUNCTION_HEAD(void, glBlendEquationSeparate, GLenum modeRGB, GLenum modeAlpha) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendEquationSeparate, modeRGB,modeAlpha)
-NATIVE_FUNCTION_HEAD(void, glBlendFunc, GLenum sfactor, GLenum dfactor) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendFunc, sfactor,dfactor)
+extern "C" GLAPI GLAPIENTRY void glBlendFuncARB(GLenum sfactor, GLenum dfactor) __attribute__((alias("glBlendFunc")));
+extern "C" GLAPI GLAPIENTRY void glBlendFunc(GLenum sfactor, GLenum dfactor) {
+    if (g_blendSfactor == sfactor && g_blendDfactor == dfactor) [[likely]] return;
+    g_blendSfactor = sfactor;
+    g_blendDfactor = dfactor;
+    GLES.glBlendFunc(sfactor, dfactor);
+}
 NATIVE_FUNCTION_HEAD(void, glBlendFuncSeparate, GLenum sfactorRGB, GLenum dfactorRGB, GLenum sfactorAlpha, GLenum dfactorAlpha) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendFuncSeparate, sfactorRGB,dfactorRGB,sfactorAlpha,dfactorAlpha)
 NATIVE_FUNCTION_HEAD(void, glBlendEquationi, GLuint buf, GLenum mode) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendEquationi, buf,mode)
 NATIVE_FUNCTION_HEAD(void, glBlendEquationSeparatei, GLuint buf, GLenum modeRGB, GLenum modeAlpha) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendEquationSeparatei, buf,modeRGB,modeAlpha)
 NATIVE_FUNCTION_HEAD(void, glBlendFunci, GLuint buf, GLenum src, GLenum dst) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendFunci, buf,src,dst)
 NATIVE_FUNCTION_HEAD(void, glBlendFuncSeparatei, GLuint buf, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendFuncSeparatei, buf,srcRGB,dstRGB,srcAlpha,dstAlpha)
-NATIVE_FUNCTION_HEAD(void, glColorMask, GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha) NATIVE_FUNCTION_END_NO_RETURN(void, glColorMask, red,green,blue,alpha)
+extern "C" GLAPI GLAPIENTRY void glColorMaskARB(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha) __attribute__((alias("glColorMask")));
+extern "C" GLAPI GLAPIENTRY void glColorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha) {
+    if (g_colorMaskInit && g_colorMask[0] == red && g_colorMask[1] == green &&
+        g_colorMask[2] == blue && g_colorMask[3] == alpha) [[likely]] return;
+    g_colorMask[0] = red; g_colorMask[1] = green;
+    g_colorMask[2] = blue; g_colorMask[3] = alpha;
+    g_colorMaskInit = true;
+    GLES.glColorMask(red, green, blue, alpha);
+}
 NATIVE_FUNCTION_HEAD(void, glColorMaski, GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a) NATIVE_FUNCTION_END_NO_RETURN(void, glColorMaski, index,r,g,b,a)
 NATIVE_FUNCTION_HEAD(void, glBlendBarrier) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendBarrier)
 
@@ -385,7 +435,15 @@ NATIVE_FUNCTION_HEAD(void, glReadnPixels, GLint x, GLint y, GLsizei width, GLsiz
 // Viewport, Scissor, and Miscellaneous
 // ============================================================================
 
-NATIVE_FUNCTION_HEAD(void, glScissor, GLint x, GLint y, GLsizei width, GLsizei height) NATIVE_FUNCTION_END_NO_RETURN(void, glScissor, x,y,width,height)
+extern "C" GLAPI GLAPIENTRY void glScissorARB(GLint x, GLint y, GLsizei width, GLsizei height) __attribute__((alias("glScissor")));
+extern "C" GLAPI GLAPIENTRY void glScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
+    if (g_scissorInit && g_scissor[0] == x && g_scissor[1] == y &&
+        g_scissor[2] == width && g_scissor[3] == height) [[likely]] return;
+    g_scissor[0] = x; g_scissor[1] = y;
+    g_scissor[2] = width; g_scissor[3] = height;
+    g_scissorInit = true;
+    GLES.glScissor(x, y, width, height);
+}
 NATIVE_FUNCTION_HEAD(void, glLineWidth, GLfloat width) NATIVE_FUNCTION_END_NO_RETURN(void, glLineWidth, width)
 NATIVE_FUNCTION_HEAD(void, glPolygonOffset, GLfloat factor, GLfloat units) NATIVE_FUNCTION_END_NO_RETURN(void, glPolygonOffset, factor,units)
 NATIVE_FUNCTION_HEAD(void, glSampleCoverage, GLfloat value, GLboolean invert) NATIVE_FUNCTION_END_NO_RETURN(void, glSampleCoverage, value,invert)
@@ -399,8 +457,19 @@ NATIVE_FUNCTION_HEAD(void, glPatchParameteri, GLenum pname, GLint value) NATIVE_
 // Stencil and Depth Operations
 // ============================================================================
 
-NATIVE_FUNCTION_HEAD(void, glDepthFunc, GLenum func) NATIVE_FUNCTION_END_NO_RETURN(void, glDepthFunc, func)
-NATIVE_FUNCTION_HEAD(void, glDepthMask, GLboolean flag) NATIVE_FUNCTION_END_NO_RETURN(void, glDepthMask, flag)
+extern "C" GLAPI GLAPIENTRY void glDepthFuncARB(GLenum func) __attribute__((alias("glDepthFunc")));
+extern "C" GLAPI GLAPIENTRY void glDepthFunc(GLenum func) {
+    if (g_depthFunc == func) [[likely]] return;
+    g_depthFunc = func;
+    GLES.glDepthFunc(func);
+}
+extern "C" GLAPI GLAPIENTRY void glDepthMaskARB(GLboolean flag) __attribute__((alias("glDepthMask")));
+extern "C" GLAPI GLAPIENTRY void glDepthMask(GLboolean flag) {
+    if (g_depthMaskInit && g_depthMask == flag) [[likely]] return;
+    g_depthMask = flag;
+    g_depthMaskInit = true;
+    GLES.glDepthMask(flag);
+}
 NATIVE_FUNCTION_HEAD(void, glDepthRangef, GLfloat n, GLfloat f) NATIVE_FUNCTION_END_NO_RETURN(void, glDepthRangef, n,f)
 NATIVE_FUNCTION_HEAD(void, glStencilFunc, GLenum func, GLint ref, GLuint mask) NATIVE_FUNCTION_END_NO_RETURN(void, glStencilFunc, func,ref,mask)
 NATIVE_FUNCTION_HEAD(void, glStencilFuncSeparate, GLenum face, GLenum func, GLint ref, GLuint mask) NATIVE_FUNCTION_END_NO_RETURN(void, glStencilFuncSeparate, face,func,ref,mask)
@@ -413,8 +482,18 @@ NATIVE_FUNCTION_HEAD(void, glStencilOpSeparate, GLenum face, GLenum sfail, GLenu
 // Culling and Face Operations
 // ============================================================================
 
-NATIVE_FUNCTION_HEAD(void, glCullFace, GLenum mode) NATIVE_FUNCTION_END_NO_RETURN(void, glCullFace, mode)
-NATIVE_FUNCTION_HEAD(void, glFrontFace, GLenum mode) NATIVE_FUNCTION_END_NO_RETURN(void, glFrontFace, mode)
+extern "C" GLAPI GLAPIENTRY void glCullFaceARB(GLenum mode) __attribute__((alias("glCullFace")));
+extern "C" GLAPI GLAPIENTRY void glCullFace(GLenum mode) {
+    if (g_cullFace == mode) [[likely]] return;
+    g_cullFace = mode;
+    GLES.glCullFace(mode);
+}
+extern "C" GLAPI GLAPIENTRY void glFrontFaceARB(GLenum mode) __attribute__((alias("glFrontFace")));
+extern "C" GLAPI GLAPIENTRY void glFrontFace(GLenum mode) {
+    if (g_frontFace == mode) [[likely]] return;
+    g_frontFace = mode;
+    GLES.glFrontFace(mode);
+}
 
 // ============================================================================
 // Finish and Flush

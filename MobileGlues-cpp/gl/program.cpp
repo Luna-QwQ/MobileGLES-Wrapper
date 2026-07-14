@@ -40,6 +40,9 @@ void glDeleteProgram(GLuint program) {
     if (ss.currentProgram == program) {
         ss.currentProgram = 0;
         GLState.currentProgram = 0;
+        // Unbind from GLES so the cache (now 0) matches the actual bound program.
+        // This keeps the glUseProgram short-circuit valid after deletion.
+        GLES.glUseProgram(0);
     }
     ss.programMap.erase(program);
     ss.programMapReverse.erase(program);
@@ -152,6 +155,12 @@ void glValidateProgram(GLuint program) {
 
 void glUseProgram(GLuint program) {
     LOG()
+    // Short-circuit: same program already active, skip the GLES driver call.
+    // Safe because GLState.shader.currentProgram is kept in sync with the actual
+    // GLES bound program: glDeleteProgram unbinds (→0), FSR1's GLStateGuard
+    // syncs the cache on scope exit, and multidraw restores prev_program before
+    // returning.
+    if (GLState.shader.currentProgram == program) [[likely]] return;
     GLState.shader.currentProgram = program;
     GLState.currentProgram = program;
     GLES.glUseProgram(program);
