@@ -33,9 +33,11 @@ void init_settings() {
     bool enableExtComputeShader = true; // always enabled
     bool enableExtTimerQuery = success ? (config_get_int("enableExtTimerQuery") > 0) : false;
     bool enableExtDirectStateAccess = success ? (config_get_int("enableExtDirectStateAccess") > 0) : false;
-    AngleDepthClearFixMode angleDepthClearFixMode =
-        success ? static_cast<AngleDepthClearFixMode>(config_get_int("angleDepthClearFixMode"))
-                : AngleDepthClearFixMode::Disabled;
+    // angleDepthClearFixMode always disabled
+    // AngleDepthClearFixMode angleDepthClearFixMode =
+    //     success ? static_cast<AngleDepthClearFixMode>(config_get_int("angleDepthClearFixMode"))
+    //             : AngleDepthClearFixMode::Disabled;
+    AngleDepthClearFixMode angleDepthClearFixMode = AngleDepthClearFixMode::Disabled;
     int customGLVersionInt = success ? config_get_int("customGLVersion") : DEFAULT_GL_VERSION;
     // fsr1Setting always disabled
     // FSR1_Quality_Preset fsr1Setting =
@@ -68,10 +70,11 @@ void init_settings() {
     if (static_cast<int>(noErrorConfig) < 0 || static_cast<int>(noErrorConfig) > 3) {
         noErrorConfig = NoErrorConfig::Auto;
     }
-    if (static_cast<int>(angleDepthClearFixMode) < 0 ||
-        static_cast<int>(angleDepthClearFixMode) >= static_cast<int>(AngleDepthClearFixMode::MaxValue)) {
-        angleDepthClearFixMode = AngleDepthClearFixMode::Disabled;
-    }
+    // angleDepthClearFixMode always disabled, validation no longer needed
+    // if (static_cast<int>(angleDepthClearFixMode) < 0 ||
+    //     static_cast<int>(angleDepthClearFixMode) >= static_cast<int>(AngleDepthClearFixMode::MaxValue)) {
+    //     angleDepthClearFixMode = AngleDepthClearFixMode::Disabled;
+    // }
     if (customGLVersionInt > 46) {
         customGLVersionInt = 46;
     } else if (customGLVersionInt < 32 && customGLVersionInt != 0) {
@@ -113,7 +116,8 @@ void init_settings() {
         // Note: maxGlslCacheSize is intentionally NOT forced to 0 here. Keeping
         // the shader cache enabled is essential to avoid repeated GLSL->ESSL
         // compilation, which is the primary cause of sudden CPU load spikes.
-        angleDepthClearFixMode = AngleDepthClearFixMode::Disabled;
+        // angleDepthClearFixMode always disabled, no need to force here
+        // angleDepthClearFixMode = AngleDepthClearFixMode::Disabled;
         fsr1Setting = FSR1_Quality_Preset::Disabled;
         hideMGEnvLevel = HideMGEnvLevel::Disabled;
     }
