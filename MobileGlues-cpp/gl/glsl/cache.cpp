@@ -9,9 +9,18 @@
 #include "../log.h"
 #include <fstream>
 #include <cstring>
+#include <cstdio>
 #include <vector>
 
 using namespace std;
+
+// Persist the cache to disk after this many new entries, so compiled
+// shaders survive process termination. On Android the process is typically
+// killed with SIGKILL, which never runs static destructors — so the
+// destructor-based save() in ~Cache() is unreliable. Each saveLocked()
+// rewrites the whole file, so the threshold balances I/O cost against the
+// risk of losing entries that were added but not yet persisted.
+static constexpr size_t SAVE_THRESHOLD = 8;
 
 // Fast non-cryptographic hash (FNV-1a 64-bit) for cache keys.
 // Stored in the first 8 bytes of the 32-byte array; remaining bytes are zero.
@@ -68,6 +77,10 @@ Cache::Cache() {
 }
 
 Cache::~Cache() {
+    // Persist any remaining dirty entries at graceful process exit. On
+    // Android this rarely runs (processes are killed with SIGKILL, which
+    // does not invoke static destructors), so the periodic saves performed
+    // by putByHash() during runtime are the primary persistence mechanism.
     if (dirty) save();
 }
 
@@ -114,6 +127,16 @@ void Cache::putByHash(const std::array<uint8_t, 32>& hash, const char* essl, int
 
     maintainCacheSize();
     dirty = true;
+    ++pendingWrites;
+
+    // Periodically persist the cache to disk so compiled shaders survive
+    // process termination (e.g. SIGKILL on Android, where ~Cache() never
+    // runs). Writing on every put would be too expensive — the entire
+    // cache is rewritten each time — so writes are batched. saveLocked()
+    // reuses the lock already held here (save() would deadlock).
+    if (pendingWrites >= SAVE_THRESHOLD) {
+        saveLocked();
+    }
 }
 
 void Cache::maintainCacheSize() {
@@ -169,9 +192,17 @@ bool Cache::load() {
     }
 }
 
-void Cache::save() {
+void Cache::saveLocked() {
+    // Assumes cacheMutex is held by the caller.
     if (global_settings.max_glsl_cache_size <= 0) return;
-    ofstream file(glsl_cache_file_path, ios::binary);
+
+    // Write to a temporary file first, then atomically rename it over the
+    // real cache file. This guarantees glsl_cache.tmp is never left in a
+    // partially-written (corrupt) state if the process is killed mid-write
+    // (e.g. SIGKILL on Android). A corrupt file would cause load() to
+    // discard the entire cache on the next launch, defeating the purpose.
+    string tmpPath = string(glsl_cache_file_path) + ".write_tmp";
+    ofstream file(tmpPath, ios::binary | ios::trunc);
     if (!file) return;
 
     size_t count = cacheList.size();
@@ -184,7 +215,30 @@ void Cache::save() {
         file.write(reinterpret_cast<const char*>(&esslSize), sizeof(esslSize));
         file.write(entry.essl.data(), (long)esslSize);
     }
+
+    file.flush();
+    file.close();
+
+    // Only swap in the new file if the write completed successfully;
+    // otherwise keep the existing cache file intact.
+    if (!file) {
+        LOG_E("Failed to write shader cache temp file: %s", tmpPath.c_str())
+        return;
+    }
+
+    if (rename(tmpPath.c_str(), glsl_cache_file_path) != 0) {
+        LOG_E("Failed to atomically rename shader cache file: %s -> %s",
+              tmpPath.c_str(), glsl_cache_file_path)
+        return;
+    }
+
     dirty = false;
+    pendingWrites = 0;
+}
+
+void Cache::save() {
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    saveLocked();
 }
 
 Cache& Cache::get_instance() {
