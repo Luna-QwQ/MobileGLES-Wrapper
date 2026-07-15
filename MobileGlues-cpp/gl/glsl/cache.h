@@ -55,14 +55,20 @@ private:
     UnorderedMap<std::array<uint8_t, 32>, ListIterator, SHA256Hash> cacheMap;
     size_t cacheSize = 0;
     bool dirty = false;
+    size_t pendingWrites = 0;  // new entries added since the last saveLocked()
 
-    // Guards cacheList, cacheMap, cacheSize, dirty. Lock is taken in
-    // getByHash/putByHash (runtime hot paths). load()/save() run during
-    // static init / process exit (single-threaded) and do not need the lock.
+    // Guards cacheList, cacheMap, cacheSize, dirty, pendingWrites.
+    // Taken in getByHash/putByHash (runtime hot paths) and in save().
+    // load() runs inside the constructor (single-threaded, before the
+    // singleton is published) and does not take the lock; its catch block
+    // calls save() which acquires the lock — safe because load() does not
+    // hold it. saveLocked() assumes the lock is already held and is used
+    // by putByHash() to persist periodically without re-locking.
     std::mutex cacheMutex;
 
     static std::array<uint8_t, 32> computeSHA256(const char* data);
     void maintainCacheSize();
+    void saveLocked();  // assumes cacheMutex is held
 };
 
 #endif
