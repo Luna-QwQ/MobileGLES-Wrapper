@@ -50,7 +50,7 @@ void init_settings() {
         customGLVersionInt = 0;
     }
 
-    // Default GLSL cache size: 64 MB. The on-disk cache eliminates repeated
+    // Default GLSL cache size: 32 MB. The on-disk cache eliminates repeated
     // GLSL->ESSL compilation (the dominant cause of sudden CPU spikes) once
     // warm. Override via the "maxGlslCacheSize" config key (in MB); set it to
     // 0 or any negative value (e.g. -1) to disable the cache entirely.
@@ -59,7 +59,7 @@ void init_settings() {
     // user explicitly sets -1, so config_has_key() is used to tell them
     // apart: an absent key keeps the default, while an explicit non-positive
     // value disables the cache.
-    size_t maxGlslCacheSize = 64 * 1024 * 1024;
+    size_t maxGlslCacheSize = 32 * 1024 * 1024;
     if (success && config_has_key("maxGlslCacheSize")) {
         int configured = config_get_int("maxGlslCacheSize");
         if (configured > 0) {
