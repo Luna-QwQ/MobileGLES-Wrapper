@@ -18,7 +18,7 @@
 > [!IMPORTANT]
 > **关于 ANGLE 支持**
 >
-> 本 Fork 版本**不支持启用 ANGLE**。`enableANGLE` 配置项已被移除，ANGLE 后端始终处于关闭状态。如需 ANGLE 支持，请使用 [官方版本](https://github.com/MobileGL-Dev/MobileGlues)。
+> 本 Fork 版本**不支持启用 ANGLE**。`enableANGLE` 配置项已被移除，ANGLE 后端始终处于关闭状态。如需 ANGLE 支持，请使用 [官方版本](https://github.com/MobileGL-Dev/MobileGlues-release)。
 
 # 面向着色器开发者
 
