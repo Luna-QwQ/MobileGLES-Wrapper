@@ -53,64 +53,53 @@ static constexpr size_t kFastIdMapFlatSize = 65536;
 template<typename FallbackMap = UnorderedMap<GLuint, GLuint>>
 class FastGLIdMap {
 public:
-    GLuint lookup(GLuint key) const {
-        if (__builtin_expect(key < kFastIdMapFlatSize, 1)) {
-            return (__builtin_expect(key < m_flat.size(), 1)) ? m_flat[key] : 0;
+    GLuint lookup(GLuint key) const noexcept {
+        if (key < kFastIdMapFlatSize) {
+            return (key < m_flat.size()) ? m_flat[key] : 0;
         }
         auto it = m_overflow.find(key);
         return (it != m_overflow.end()) ? it->second : 0;
     }
 
-    void insert(GLuint key, GLuint value) {
-        if (__builtin_expect(key < kFastIdMapFlatSize, 1)) {
-            if (__builtin_expect(key >= m_flat.size(), 0)) {
-                m_flat.resize(key + 1, 0);
-            }
+    void insert(GLuint key, GLuint value) noexcept {
+        if (key < kFastIdMapFlatSize) {
+            if (key >= m_flat.size()) m_flat.resize(key + 1, 0);
             m_flat[key] = value;
         } else {
             m_overflow[key] = value;
         }
     }
 
-    void erase(GLuint key) {
-        if (__builtin_expect(key < kFastIdMapFlatSize, 1)) {
-            if (__builtin_expect(key < m_flat.size(), 1)) {
-                m_flat[key] = 0;
-            }
+    void erase(GLuint key) noexcept {
+        if (key < kFastIdMapFlatSize) {
+            if (key < m_flat.size()) m_flat[key] = 0;
         } else {
             m_overflow.erase(key);
         }
     }
 
-    GLuint& operator[](GLuint key) {
-        if (__builtin_expect(key < kFastIdMapFlatSize, 1)) {
-            if (__builtin_expect(key >= m_flat.size(), 0)) {
-                m_flat.resize(key + 1, 0);
-            }
+    GLuint& operator[](GLuint key) noexcept {
+        if (key < kFastIdMapFlatSize) {
+            if (key >= m_flat.size()) m_flat.resize(key + 1, 0);
             return m_flat[key];
         }
         return m_overflow[key];
     }
 
-    void clear() {
+    void clear() noexcept {
         m_flat.clear();
         m_overflow.clear();
     }
 
-    void reserve(size_t n) {
-        if (n <= kFastIdMapFlatSize) {
-            m_flat.reserve(n);
-        }
-        // overflow map doesn't need explicit reserve
+    void reserve(size_t n) noexcept {
+        if (n <= kFastIdMapFlatSize) m_flat.reserve(n);
     }
 
-    bool contains(GLuint key) const {
-        return lookup(key) != 0;
-    }
+    bool contains(GLuint key) const noexcept { return lookup(key) != 0; }
 
-    size_t size() const {
+    size_t size() const noexcept {
         size_t count = 0;
-        for (auto v : m_flat) { if (v) ++count; }
+        for (auto v : m_flat) if (v) ++count;
         return count + m_overflow.size();
     }
 

@@ -103,6 +103,87 @@ void glGetIntegerv(GLenum pname, GLint* params) {
         break;
     }
 
+    case GL_MAX_VERTEX_ATTRIBS: {
+        static GLint cached = -1;
+        if (cached == -1) [[unlikely]] {
+            GLES.glGetIntegerv(pname, &cached);
+        }
+        (*params) = cached;
+        break;
+    }
+
+    case GL_MAX_DRAW_BUFFERS: {
+        static GLint cached = -1;
+        if (cached == -1) [[unlikely]] {
+            GLES.glGetIntegerv(pname, &cached);
+        }
+        (*params) = cached;
+        break;
+    }
+
+    case GL_MAX_VERTEX_UNIFORM_VECTORS: {
+        static GLint cached = -1;
+        if (cached == -1) [[unlikely]] {
+            GLES.glGetIntegerv(pname, &cached);
+        }
+        (*params) = cached;
+        break;
+    }
+
+    case GL_MAX_FRAGMENT_UNIFORM_VECTORS: {
+        static GLint cached = -1;
+        if (cached == -1) [[unlikely]] {
+            GLES.glGetIntegerv(pname, &cached);
+        }
+        (*params) = cached;
+        break;
+    }
+
+    case GL_MAX_VARYING_VECTORS: {
+        static GLint cached = -1;
+        if (cached == -1) [[unlikely]] {
+            GLES.glGetIntegerv(pname, &cached);
+        }
+        (*params) = cached;
+        break;
+    }
+
+    case GL_MAX_TEXTURE_SIZE: {
+        static GLint cached = -1;
+        if (cached == -1) [[unlikely]] {
+            GLES.glGetIntegerv(pname, &cached);
+        }
+        (*params) = cached;
+        break;
+    }
+
+    case GL_MAX_CUBE_MAP_TEXTURE_SIZE: {
+        static GLint cached = -1;
+        if (cached == -1) [[unlikely]] {
+            GLES.glGetIntegerv(pname, &cached);
+        }
+        (*params) = cached;
+        break;
+    }
+
+    case GL_MAX_RENDERBUFFER_SIZE: {
+        static GLint cached = -1;
+        if (cached == -1) [[unlikely]] {
+            GLES.glGetIntegerv(pname, &cached);
+        }
+        (*params) = cached;
+        break;
+    }
+
+    case GL_MAX_SAMPLES: {
+        static GLint cached = -1;
+        if (cached == -1) [[unlikely]] {
+            GLES.glGetIntegerv(pname, &cached);
+        }
+        (*params) = cached;
+        break;
+    }
+
     case GL_CONTEXT_FLAGS:
         (*params) = GL_CONTEXT_FLAG_ROBUST_ACCESS_BIT
                   | GL_CONTEXT_FLAG_FORWARD_COMPATIBLE_BIT

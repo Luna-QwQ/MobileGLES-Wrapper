@@ -21,11 +21,18 @@
 #define DEBUG 0
 
 // ---------------------------------------------------------------------------
-// Module-level state: tracked 2D texture bindings per unit
+// Module-level state: tracked texture bindings per unit
 // (referenced from texture.cpp and drawing.cpp)
 // ---------------------------------------------------------------------------
 
-GLuint g_tracked_tex2d_binding[32] = {0};
+GLuint g_tracked_tex2d_binding[MAX_TEXTURE_UNITS] = {0};
+GLuint g_tracked_tex_cube_binding[MAX_TEXTURE_UNITS] = {0};
+GLuint g_tracked_tex_2d_array_binding[MAX_TEXTURE_UNITS] = {0};
+GLuint g_tracked_tex_3d_binding[MAX_TEXTURE_UNITS] = {0};
+GLuint g_tracked_tex_2d_ms_binding[MAX_TEXTURE_UNITS] = {0};
+GLuint g_tracked_tex_2d_ms_array_binding[MAX_TEXTURE_UNITS] = {0};
+GLuint g_tracked_tex_cube_array_binding[MAX_TEXTURE_UNITS] = {0};
+GLuint g_tracked_tex_rect_binding[MAX_TEXTURE_UNITS] = {0};
 
 // ============================================================================
 // Atomic counter buffer emulation
@@ -84,49 +91,41 @@ static inline __attribute__((always_inline)) void readbackAtomicCounters() {
 // ============================================================================
 
 extern "C" GLAPI GLAPIENTRY void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
-    PREPARE_FOR_DRAW();
     syncAtomicCounters();
     GLES.glDrawArrays(mode, first, count);
 }
 
 extern "C" GLAPI GLAPIENTRY void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices) {
-    PREPARE_FOR_DRAW();
     syncAtomicCounters();
     GLES.glDrawElements(mode, count, type, indices);
 }
 
 extern "C" GLAPI GLAPIENTRY void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei instancecount) {
-    PREPARE_FOR_DRAW();
     syncAtomicCounters();
     GLES.glDrawArraysInstanced(mode, first, count, instancecount);
 }
 
 extern "C" GLAPI GLAPIENTRY void glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount) {
-    PREPARE_FOR_DRAW();
     syncAtomicCounters();
     GLES.glDrawElementsInstanced(mode, count, type, indices, instancecount);
 }
 
 extern "C" GLAPI GLAPIENTRY void glDrawRangeElements(GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices) {
-    PREPARE_FOR_DRAW();
     syncAtomicCounters();
     GLES.glDrawRangeElements(mode, start, end, count, type, indices);
 }
 
 extern "C" GLAPI GLAPIENTRY void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const void *indices, GLint basevertex) {
-    PREPARE_FOR_DRAW();
     syncAtomicCounters();
     GLES.glDrawElementsBaseVertex(mode, count, type, indices, basevertex);
 }
 
 extern "C" GLAPI GLAPIENTRY void glDrawArraysIndirect(GLenum mode, const void *indirect) {
-    PREPARE_FOR_DRAW();
     syncAtomicCounters();
     GLES.glDrawArraysIndirect(mode, indirect);
 }
 
 extern "C" GLAPI GLAPIENTRY void glDrawElementsIndirect(GLenum mode, GLenum type, const void *indirect) {
-    PREPARE_FOR_DRAW();
     syncAtomicCounters();
     GLES.glDrawElementsIndirect(mode, type, indirect);
 }
@@ -136,7 +135,6 @@ extern "C" GLAPI GLAPIENTRY void glDrawElementsIndirect(GLenum mode, GLenum type
 // ============================================================================
 
 extern "C" GLAPI GLAPIENTRY void glDispatchCompute(GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z) {
-    PREPARE_FOR_DRAW();
     syncAtomicCounters();
     GLES.glDispatchCompute(num_groups_x, num_groups_y, num_groups_z);
     readbackAtomicCounters();
