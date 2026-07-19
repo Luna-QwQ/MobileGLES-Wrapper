@@ -249,7 +249,7 @@ static std::array<GLuint, BINDING_COUNT> g_bound_buffers_arr = {0};
 // Buffer Map Helpers: Capacity & Lifecycle
 // ============================================================================
 
-static inline int ensure_buffer_capacity(GLuint id) {
+static inline __attribute__((always_inline)) int ensure_buffer_capacity(GLuint id) {
     if (id < (GLuint)g_gen_buffers.size()) [[likely]] return 0;
     g_gen_buffers.resize(id + 1, 0);
     g_gen_buffer_exists.resize(id + 1, 0);
@@ -257,7 +257,7 @@ static inline int ensure_buffer_capacity(GLuint id) {
     return 0;
 }
 
-static inline int ensure_array_capacity(GLuint id) {
+static inline __attribute__((always_inline)) int ensure_array_capacity(GLuint id) {
     if (id < (GLuint)g_gen_arrays.size()) [[likely]] return 0;
     g_gen_arrays.resize(id + 1, 0);
     g_gen_array_exists.resize(id + 1, 0);
@@ -311,7 +311,7 @@ GLuint find_real_buffer(GLuint key) {
 // Combined lookup: returns {real_buffer, exists} in a single bounds check.
 // g_gen_buffers and g_gen_buffer_exists are always resized together,
 // so checking one is sufficient for both.
-static inline std::pair<GLuint, bool> find_real_buffer_with_exists(GLuint key) {
+static inline __attribute__((always_inline)) std::pair<GLuint, bool> find_real_buffer_with_exists(GLuint key) {
     if (key < g_gen_buffers.size() && g_gen_buffer_exists[key]) [[likely]]
         return {g_gen_buffers[key], true};
     return {0, false};
@@ -328,7 +328,7 @@ static inline std::pair<GLuint, bool> find_real_buffer_with_exists(GLuint key) {
 bool g_atomicCountersActive = false;
 
 #include "state.h"
-void mg_update_atomic_counters_active_flag() {
+static inline __attribute__((always_inline)) void mg_update_atomic_counters_active_flag() {
     auto &bs = GLState.buffer;
     g_atomicCountersActive = (bs.atomicCounterBufferBinding != 0) && !bs.atomicCounterData.empty();
 }
@@ -337,16 +337,16 @@ void mg_update_atomic_counters_active_flag() {
 // has already verified the buffer exists (e.g. after find_real_buffer_with_exists).
 // Avoids redundant ensure_buffer_capacity in hot paths like glBindBuffer,
 // glBindBufferRange, glBindBufferBase, glBindVertexBuffer, glTexBuffer.
-static inline void modify_buffer_direct(GLuint key, GLuint value) {
+static inline __attribute__((always_inline)) void modify_buffer_direct(GLuint key, GLuint value) {
     g_gen_buffers[key] = value;
 }
 
-GLuint get_ibo_by_vao(GLuint vao) {
+static inline __attribute__((always_inline)) GLuint get_ibo_by_vao(GLuint vao) {
     if (vao < g_element_array_buffer_per_vao.size()) return g_element_array_buffer_per_vao[vao];
     return 0;
 }
 
-GLuint find_bound_array() {
+static inline __attribute__((always_inline)) GLuint find_bound_array() {
     return bound_array;
 }
 
@@ -388,12 +388,12 @@ static inline int binding_target_to_index(GLenum target) {
     }
 }
 
-void set_bound_buffer_by_target(GLenum target, GLuint buffer) {
+static inline __attribute__((always_inline)) void set_bound_buffer_by_target(GLenum target, GLuint buffer) {
     int idx = binding_target_to_index(target);
     if (idx >= 0) g_bound_buffers_arr[idx] = buffer;
 }
 
-GLuint find_bound_buffer(GLenum key) {
+static inline __attribute__((always_inline)) GLuint find_bound_buffer(GLenum key) {
     // Special case: ELEMENT_ARRAY_BUFFER uses VAO tracking
     if (key == GL_ELEMENT_ARRAY_BUFFER_BINDING) {
         return get_ibo_by_vao(find_bound_array());
