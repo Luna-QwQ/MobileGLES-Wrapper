@@ -118,6 +118,11 @@ extern "C" GLAPI GLAPIENTRY void glReadBuffer(GLenum mode) {
         // Remap to the appropriate GLES-legal value based on the bound FBO.
         mapped = (GLState.framebuffer.readFBO != 0) ? GL_COLOR_ATTACHMENT0 : GL_BACK;
     }
-    GLES.glReadBuffer(mapped);
-    GLState.framebuffer.readBuffer = mapped;
+    // Short-circuit: GLES.glReadBuffer and GLState.framebuffer.readBuffer are
+    // only mutated here (and reset to GL_BACK by FramebufferState::Reset()),
+    // so if the mapped value matches the cache the GLES call is redundant.
+    if (GLState.framebuffer.readBuffer != mapped) {
+        GLES.glReadBuffer(mapped);
+        GLState.framebuffer.readBuffer = mapped;
+    }
 }

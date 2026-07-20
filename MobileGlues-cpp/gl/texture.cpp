@@ -2285,23 +2285,35 @@ void glClearTexImage(GLuint texture, GLint level, GLenum format, GLenum type, co
 
 void glPixelStorei(GLenum pname, GLint param) {
     LOG_D("glPixelStorei, pname = %s, param = %d", glEnumToString(pname), param)
-    GLES.glPixelStorei(pname, param);
-    // Keep CPU-side cache in sync to avoid glGetIntegerv GPU round-trips
+
+    // Hot path: many apps redundantly reset GL_UNPACK_ALIGNMENT / GL_ROW_LENGTH
+    // before every texture upload. Short-circuit when the value is already
+    // cached — avoids a GLES driver call per upload. Safe because the CPU
+    // cache (GLState.texture.unpack*/pack*) is mutated only here and in
+    // TextureState::Reset(); ScopedUnpackTight / ScopedPackTight deliberately
+    // use raw GLES.glPixelStorei() and leave GLState untouched, then restore
+    // GLES to match GLState on scope exit, so the cache stays authoritative.
+    GLint* cached = nullptr;
     switch (pname) {
-        case GL_UNPACK_ALIGNMENT:  GLState.texture.unpackAlignment = param;  break;
-        case GL_UNPACK_ROW_LENGTH: GLState.texture.unpackRowLength = param;  break;
-        case GL_UNPACK_IMAGE_HEIGHT: GLState.texture.unpackImageHeight = param; break;
-        case GL_UNPACK_SKIP_PIXELS: GLState.texture.unpackSkipPixels = param; break;
-        case GL_UNPACK_SKIP_ROWS:  GLState.texture.unpackSkipRows = param;  break;
-        case GL_UNPACK_SKIP_IMAGES: GLState.texture.unpackSkipImages = param; break;
-        case GL_PACK_ALIGNMENT:    GLState.texture.packAlignment = param;    break;
-        case GL_PACK_ROW_LENGTH:   GLState.texture.packRowLength = param;    break;
-        case GL_PACK_IMAGE_HEIGHT: GLState.texture.packImageHeight = param;  break;
-        case GL_PACK_SKIP_PIXELS:  GLState.texture.packSkipPixels = param;   break;
-        case GL_PACK_SKIP_ROWS:    GLState.texture.packSkipRows = param;     break;
-        case GL_PACK_SKIP_IMAGES:  GLState.texture.packSkipImages = param;   break;
+        case GL_UNPACK_ALIGNMENT:    cached = &GLState.texture.unpackAlignment;    break;
+        case GL_UNPACK_ROW_LENGTH:   cached = &GLState.texture.unpackRowLength;    break;
+        case GL_UNPACK_IMAGE_HEIGHT: cached = &GLState.texture.unpackImageHeight;  break;
+        case GL_UNPACK_SKIP_PIXELS:  cached = &GLState.texture.unpackSkipPixels;   break;
+        case GL_UNPACK_SKIP_ROWS:    cached = &GLState.texture.unpackSkipRows;     break;
+        case GL_UNPACK_SKIP_IMAGES:  cached = &GLState.texture.unpackSkipImages;   break;
+        case GL_PACK_ALIGNMENT:      cached = &GLState.texture.packAlignment;      break;
+        case GL_PACK_ROW_LENGTH:     cached = &GLState.texture.packRowLength;      break;
+        case GL_PACK_IMAGE_HEIGHT:   cached = &GLState.texture.packImageHeight;    break;
+        case GL_PACK_SKIP_PIXELS:    cached = &GLState.texture.packSkipPixels;     break;
+        case GL_PACK_SKIP_ROWS:      cached = &GLState.texture.packSkipRows;       break;
+        case GL_PACK_SKIP_IMAGES:    cached = &GLState.texture.packSkipImages;     break;
         default: break;
     }
+    if (cached) {
+        if (*cached == param) [[likely]] return;
+        *cached = param;
+    }
+    GLES.glPixelStorei(pname, param);
     CHECK_GL_ERROR
 }
 
