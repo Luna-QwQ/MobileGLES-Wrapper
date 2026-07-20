@@ -290,13 +290,13 @@ void MarkTextureObjectForDeletion(unsigned texture) {
     delete textureObject;
 }
 
-inline __attribute__((always_inline)) TextureObject* mgGetTexObjectByTarget(GLenum target) {
+TextureObject* mgGetTexObjectByTarget(GLenum target) {
     return GetTextureUnit(GetCurrentTextureUnitIndex())
         .GetBindingSlot(ConvertGLEnumToTextureTarget(target))
         .GetBoundObject();
 }
 
-inline __attribute__((always_inline)) TextureObject* mgGetTexObjectByID(unsigned texture) {
+TextureObject* mgGetTexObjectByID(unsigned texture) {
     if (texture >= BufferObjectsVec.size() || !BufferObjectsVec[texture]) {
         LOG_E("Texture %u not found in BufferObjectsVec!", texture);
         return nullptr;
