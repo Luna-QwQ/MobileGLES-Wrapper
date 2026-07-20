@@ -1,4 +1,4 @@
-// MobileGlues - config/settings.cpp
+// MobileGLES - config/settings.cpp
 // Copyright (c) 2025-2026 MobileGL-Dev
 // Licensed under the GNU Lesser General Public License v2.1:
 //   https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
@@ -9,28 +9,18 @@
 #include "config.h"
 #include "../gl/log.h"
 #include "../gl/envvars.h"
-#include "gpu_utils.h"
 #include "../gl/getter.h"
 
 #define DEBUG 0
 
 global_settings_t global_settings;
 
+// iOS-only: ANGLE is the framework we link against (libEGL.framework /
+// libGLESv2.framework), so there is no separate "enable ANGLE" decision
+// to make at runtime. All GPU/launcher/Vulkan detection logic from the
+// Android/Linux branch has been removed. Settings use safe hardcoded
+// defaults; users can still override via config.json in the MG directory.
 void init_settings() {
-#if defined(__APPLE__)
-    global_settings.angle = AngleMode::Disabled;
-    global_settings.ignore_error = IgnoreErrorLevel::Partial;
-    global_settings.ext_compute_shader = false;
-    global_settings.max_glsl_cache_size = 30 * 1024 * 1024;
-    global_settings.multidraw_mode = multidraw_mode_t::DrawElements;
-    global_settings.angle_depth_clear_fix_mode = AngleDepthClearFixMode::Disabled;
-    global_settings.ext_direct_state_access = true;
-    global_settings.custom_gl_version = {0, 0, 0}; // will go default
-    global_settings.fsr1_setting = FSR1_Quality_Preset::Disabled;
-    global_settings.hide_mg_env_level = HideMGEnvLevel::Disabled;
-
-#else
-
     int success = initialized;
     if (!success) {
         success = config_refresh();
@@ -39,41 +29,54 @@ void init_settings() {
         }
     }
 
-    AngleConfig angleConfig =
-        success ? static_cast<AngleConfig>(config_get_int("enableANGLE")) : AngleConfig::DisableIfPossible;
+    // On iOS, ANGLE is always the backing implementation (linked framework).
+    global_settings.angle = AngleMode::Disabled; // The framework already IS ANGLE; no separate runtime toggle.
+    global_settings.buffer_coherent_as_flush = (global_settings.angle == AngleMode::Disabled);
+
+    // Allow overriding ignore_error via config.json (default: Partial).
     NoErrorConfig noErrorConfig =
         success ? static_cast<NoErrorConfig>(config_get_int("enableNoError")) : NoErrorConfig::Auto;
-    bool enableExtComputeShader = success ? (config_get_int("enableExtComputeShader") > 0) : false;
-    bool enableExtTimerQuery = success ? (config_get_int("enableExtTimerQuery") > 0) : false;
-    bool enableExtDirectStateAccess = success ? (config_get_int("enableExtDirectStateAccess") > 0) : false;
-    AngleDepthClearFixMode angleDepthClearFixMode =
-        success ? static_cast<AngleDepthClearFixMode>(config_get_int("angleDepthClearFixMode"))
-                : AngleDepthClearFixMode::Disabled;
-    int customGLVersionInt = success ? config_get_int("customGLVersion") : DEFAULT_GL_VERSION;
-    FSR1_Quality_Preset fsr1Setting =
-        success ? static_cast<FSR1_Quality_Preset>(config_get_int("fsr1Setting")) : FSR1_Quality_Preset::Disabled;
-    HideMGEnvLevel hideMGEnvLevel =
-        success ? static_cast<HideMGEnvLevel>(config_get_int("hideMGEnvLevel")) : HideMGEnvLevel::Disabled;
-
-    if (customGLVersionInt < 0) {
-        customGLVersionInt = 0;
-    }
-
-    size_t maxGlslCacheSize = 0;
-    if (config_get_int("maxGlslCacheSize") > 0) {
-        maxGlslCacheSize = success ? config_get_int("maxGlslCacheSize") * 1024 * 1024 : 0;
-    }
-
-    if (static_cast<int>(angleConfig) < 0 || static_cast<int>(angleConfig) > 3) {
-        angleConfig = AngleConfig::EnableIfPossible;
-    }
     if (static_cast<int>(noErrorConfig) < 0 || static_cast<int>(noErrorConfig) > 3) {
         noErrorConfig = NoErrorConfig::Auto;
     }
+    switch (noErrorConfig) {
+    case NoErrorConfig::Level1:
+        global_settings.ignore_error = IgnoreErrorLevel::Partial;
+        LOG_D("Error ignoring: Level 1 (Partial)");
+        break;
+    case NoErrorConfig::Level2:
+        global_settings.ignore_error = IgnoreErrorLevel::Full;
+        LOG_D("Error ignoring: Level 2 (Full)");
+        break;
+    case NoErrorConfig::Auto:
+    case NoErrorConfig::Disable:
+    default:
+        global_settings.ignore_error = IgnoreErrorLevel::Partial;
+        LOG_D("Error ignoring: Partial (iOS default)");
+        break;
+    }
+
+    global_settings.ext_compute_shader = success ? (config_get_int("enableExtComputeShader") > 0) : false;
+    global_settings.ext_timer_query = success ? (config_get_int("enableExtTimerQuery") > 0) : true;
+    global_settings.ext_direct_state_access = success ? (config_get_int("enableExtDirectStateAccess") > 0) : true;
+
+    size_t maxGlslCacheSize = 0;
+    if (success && config_get_int("maxGlslCacheSize") > 0) {
+        maxGlslCacheSize = config_get_int("maxGlslCacheSize") * 1024 * 1024;
+    }
+    global_settings.max_glsl_cache_size = maxGlslCacheSize;
+
+    AngleDepthClearFixMode angleDepthClearFixMode =
+        success ? static_cast<AngleDepthClearFixMode>(config_get_int("angleDepthClearFixMode"))
+                : AngleDepthClearFixMode::Disabled;
     if (static_cast<int>(angleDepthClearFixMode) < 0 ||
         static_cast<int>(angleDepthClearFixMode) >= static_cast<int>(AngleDepthClearFixMode::MaxValue)) {
         angleDepthClearFixMode = AngleDepthClearFixMode::Disabled;
     }
+    global_settings.angle_depth_clear_fix_mode = angleDepthClearFixMode;
+
+    int customGLVersionInt = success ? config_get_int("customGLVersion") : 0;
+    if (customGLVersionInt < 0) customGLVersionInt = 0;
     if (customGLVersionInt > 46) {
         customGLVersionInt = 46;
     } else if (customGLVersionInt < 32 && customGLVersionInt != 0) {
@@ -83,143 +86,48 @@ void init_settings() {
     } else if (customGLVersionInt == 0) {
         customGLVersionInt = DEFAULT_GL_VERSION;
     }
+    global_settings.custom_gl_version = Version(customGLVersionInt);
+
+    FSR1_Quality_Preset fsr1Setting =
+        success ? static_cast<FSR1_Quality_Preset>(config_get_int("fsr1Setting")) : FSR1_Quality_Preset::Disabled;
     if (static_cast<int>(fsr1Setting) < 0 ||
         static_cast<int>(fsr1Setting) >= static_cast<int>(FSR1_Quality_Preset::MaxValue)) {
         fsr1Setting = FSR1_Quality_Preset::Disabled;
     }
+    global_settings.fsr1_setting = fsr1Setting;
+
+    HideMGEnvLevel hideMGEnvLevel =
+        success ? static_cast<HideMGEnvLevel>(config_get_int("hideMGEnvLevel")) : HideMGEnvLevel::Disabled;
     if (static_cast<int>(hideMGEnvLevel) < 0 ||
         static_cast<int>(hideMGEnvLevel) >= static_cast<int>(HideMGEnvLevel::MaxValue)) {
         hideMGEnvLevel = HideMGEnvLevel::Disabled;
     }
-
-    Version customGLVersion(customGLVersionInt);
-
-    int isInPluginApp = 0;
-    GetEnvVarInt("MG_PLUGIN_STATUS", &isInPluginApp, 0);
-    int fclVersion = 0;
-    GetEnvVarInt("FCL_VERSION_CODE", &fclVersion, 0);
-    int zlVersion = 0;
-    GetEnvVarInt("ZALITH_VERSION_CODE", &zlVersion, 0);
-    int pgwVersion = 0;
-    GetEnvVarInt("PGW_VERSION_CODE", &pgwVersion, 0);
+    global_settings.hide_mg_env_level = hideMGEnvLevel;
 
     LOG_V("MG_DIR_PATH = %s", mg_directory_path ? mg_directory_path : "(default)")
 
-    if (isInPluginApp == 0 && fclVersion == 0 && zlVersion == 0 && pgwVersion == 0 && !is_custom_mg_dir) {
-        LOG_V("Unsupported launcher detected, force using default config.")
-        angleConfig = AngleConfig::DisableIfPossible;
-        noErrorConfig = NoErrorConfig::Auto;
-        enableExtComputeShader = false;
-        enableExtTimerQuery = true;
-        enableExtDirectStateAccess = true;
-        maxGlslCacheSize = 0;
-        angleDepthClearFixMode = AngleDepthClearFixMode::Disabled;
-        fsr1Setting = FSR1_Quality_Preset::Disabled;
-        hideMGEnvLevel = HideMGEnvLevel::Disabled;
-    }
-
-    AngleMode finalAngleMode = AngleMode::Disabled;
-    std::string gpuString = getGPUInfo();
-    const char* gpu_cstr = gpuString.c_str();
-    LOG_D("GPU: %s", gpu_cstr ? gpu_cstr : "(unknown)")
-
-    int hasVk12 = hasVulkan12();
-    int isQcom = isAdreno(gpu_cstr);
-    int is730 = isAdreno730(gpu_cstr);
-    int is740 = isAdreno740(gpu_cstr);
-    int is830 = isAdreno830(gpu_cstr);
-    bool isANGLESupported = checkIfANGLESupported(gpu_cstr);
-
-    LOG_D("Has Vulkan 1.2? = %s", hasVk12 ? "true" : "false")
-    LOG_D("Is Adreno? = %s", isQcom ? "true" : "false")
-    LOG_D("Is Adreno 730? = %s", is730 ? "true" : "false")
-    LOG_D("Is Adreno 740? = %s", is740 ? "true" : "false")
-    LOG_D("Is Adreno 830? = %s", is830 ? "true" : "false")
-    LOG_D("Is ANGLE supported? = %s", isANGLESupported ? "true" : "false")
-
-    switch (angleConfig) {
-    case AngleConfig::ForceDisable:
-        finalAngleMode = AngleMode::Disabled;
-        LOG_D("ANGLE: Force disabled");
-        break;
-
-    case AngleConfig::ForceEnable:
-        finalAngleMode = AngleMode::Enabled;
-        LOG_D("ANGLE: Force enabled");
-        break;
-
-    case AngleConfig::EnableIfPossible: {
-        finalAngleMode = isANGLESupported ? AngleMode::Enabled : AngleMode::Disabled;
-        LOG_D("ANGLE: Conditionally %s", (finalAngleMode == AngleMode::Enabled) ? "enabled" : "disabled");
-        break;
-    }
-
-    case AngleConfig::DisableIfPossible:
-    default:
-        finalAngleMode = AngleMode::Disabled;
-        break;
-    }
-
-    global_settings.angle = finalAngleMode;
-    LOG_D("Final ANGLE setting: %d", static_cast<int>(global_settings.angle))
-    global_settings.buffer_coherent_as_flush = (global_settings.angle == AngleMode::Disabled);
-
-    if (global_settings.angle == AngleMode::Enabled) {
-        // setenv("LIBGL_GLES", "libGLESv2_angle.so", 1);
-        // setenv("LIBGL_EGL", "libEGL_angle.so", 1);
-    }
-
-    switch (noErrorConfig) {
-    case NoErrorConfig::Level1:
-        global_settings.ignore_error = IgnoreErrorLevel::Partial;
-        LOG_D("Error ignoring: Level 1 (Partial)");
-        break;
-
-    case NoErrorConfig::Level2:
-        global_settings.ignore_error = IgnoreErrorLevel::Full;
-        LOG_D("Error ignoring: Level 2 (Full)");
-        break;
-
-    case NoErrorConfig::Auto:
-    case NoErrorConfig::Disable:
-    default:
-        global_settings.ignore_error = IgnoreErrorLevel::None;
-        LOG_D("Error ignoring: Disabled");
-        break;
-    }
-
-    global_settings.ext_compute_shader = enableExtComputeShader;
-    global_settings.ext_timer_query = enableExtTimerQuery;
-    global_settings.ext_direct_state_access = enableExtDirectStateAccess;
-    global_settings.max_glsl_cache_size = maxGlslCacheSize;
-    global_settings.angle_depth_clear_fix_mode = angleDepthClearFixMode;
-    global_settings.custom_gl_version = customGLVersion;
-    global_settings.fsr1_setting = fsr1Setting;
-    global_settings.hide_mg_env_level = hideMGEnvLevel;
-#endif
-
-    LOG_V("[MobileGlues] Setting: enableAngle                 = %s",
+    LOG_V("[MobileGLES] Setting: enableAngle                 = %s",
           global_settings.angle == AngleMode::Enabled ? "true" : "false")
-    LOG_V("[MobileGlues] Setting: ignoreError                 = %i", static_cast<int>(global_settings.ignore_error))
-    LOG_V("[MobileGlues] Setting: enableExtComputeShader      = %s",
+    LOG_V("[MobileGLES] Setting: ignoreError                 = %i", static_cast<int>(global_settings.ignore_error))
+    LOG_V("[MobileGLES] Setting: enableExtComputeShader      = %s",
           global_settings.ext_compute_shader ? "true" : "false")
-    LOG_V("[MobileGlues] Setting: enableExtTimerQuery         = %s", global_settings.ext_timer_query ? "true" : "false")
-    LOG_V("[MobileGlues] Setting: enableExtDirectStateAccess  = %s",
+    LOG_V("[MobileGLES] Setting: enableExtTimerQuery         = %s", global_settings.ext_timer_query ? "true" : "false")
+    LOG_V("[MobileGLES] Setting: enableExtDirectStateAccess  = %s",
           global_settings.ext_direct_state_access ? "true" : "false")
-    LOG_V("[MobileGlues] Setting: maxGlslCacheSize            = %i",
+    LOG_V("[MobileGLES] Setting: maxGlslCacheSize            = %i",
           static_cast<int>(global_settings.max_glsl_cache_size / 1024 / 1024))
-    LOG_V("[MobileGlues] Setting: angleDepthClearFixMode      = %i",
+    LOG_V("[MobileGLES] Setting: angleDepthClearFixMode      = %i",
           static_cast<int>(global_settings.angle_depth_clear_fix_mode))
-    LOG_V("[MobileGlues] Setting: bufferCoherentAsFlush       = %i",
+    LOG_V("[MobileGLES] Setting: bufferCoherentAsFlush       = %i",
           static_cast<int>(global_settings.buffer_coherent_as_flush))
     if (global_settings.custom_gl_version.isEmpty()) {
-        LOG_V("[MobileGlues] Setting: customGLVersion             = (default)");
+        LOG_V("[MobileGLES] Setting: customGLVersion             = (default)");
     } else {
-        LOG_V("[MobileGlues] Setting: customGLVersion             = %s",
+        LOG_V("[MobileGLES] Setting: customGLVersion             = %s",
               global_settings.custom_gl_version.toString().c_str());
     }
-    LOG_V("[MobileGlues] Setting: fsr1Setting                 = %i", static_cast<int>(global_settings.fsr1_setting))
-    LOG_V("[MobileGlues] Setting: hideMGEnvLevel              = %i",
+    LOG_V("[MobileGLES] Setting: fsr1Setting                 = %i", static_cast<int>(global_settings.fsr1_setting))
+    LOG_V("[MobileGLES] Setting: hideMGEnvLevel              = %i",
           static_cast<int>(global_settings.hide_mg_env_level))
 
     GLVersion =
@@ -227,9 +135,13 @@ void init_settings() {
 }
 
 void set_multidraw_setting() { // should be called after init_gles_target()
-    multidraw_mode_t multidrawMode = static_cast<multidraw_mode_t>(config_get_int("multidrawMode"));
-    if (static_cast<int>(multidrawMode) == -1) {
-        multidrawMode = multidraw_mode_t::Auto;
+    // iOS-only: respect config.json if present, otherwise keep the value
+    // already initialised in init_settings() and let init_settings_post()
+    // resolve it against actual GLES capabilities.
+    multidraw_mode_t multidrawMode = global_settings.multidraw_mode;
+    int configured = initialized ? config_get_int("multidrawMode") : -1;
+    if (configured >= 0) {
+        multidrawMode = static_cast<multidraw_mode_t>(configured);
     }
     if (static_cast<int>(multidrawMode) < 0 ||
         static_cast<int>(multidrawMode) >= static_cast<int>(multidraw_mode_t::MaxValue)) {
@@ -261,7 +173,7 @@ void set_multidraw_setting() { // should be called after init_gles_target()
         global_settings.multidraw_mode = multidraw_mode_t::Auto;
         break;
     }
-    LOG_V("[MobileGlues] Setting: multidrawMode               = %s", draw_mode_str.c_str())
+    LOG_V("[MobileGLES] Setting: multidrawMode               = %s", draw_mode_str.c_str())
 }
 
 void init_settings_post() {

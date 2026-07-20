@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project("mobileglues")
+project("mobilegles")
 enable_language(CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,19 +28,18 @@ set(SPIRV_CROSS_ENABLE_UTIL    OFF CACHE BOOL "Disable util" FORCE)
 add_subdirectory(3rdparty/glslang)
 add_subdirectory(3rdparty/SPIRV-Cross)
 
-if(MACOS)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w -fvisibility=default -funwind-tables -g -D_THREAD_SAFE -fPIC -stdlib=libc++")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w -g -std=gnu99 -funwind-tables -fvisibility=hidden")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++")
-else()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w -fvisibility=hidden -funwind-tables -g -D_THREAD_SAFE -fPIC")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w -g -std=gnu99 -funwind-tables -fvisibility=hidden")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++")
-    set(CMAKE_ANDROID_STL_TYPE c++_static)
+# iOS-only build configuration.
+# This branch intentionally refuses to compile for any non-Apple platform.
+if(NOT APPLE)
+    message(FATAL_ERROR "MobileGLES is iOS-only and refuses to build for non-Apple platforms.")
 endif()
 
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w -fvisibility=default -funwind-tables -g -D_THREAD_SAFE -fPIC -stdlib=libc++")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w -g -std=gnu99 -funwind-tables -fvisibility=hidden")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++")
+
 if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-    # Check if ThinLTO or LTO is suppported
+    # Check if ThinLTO or LTO is supported
     include(CheckIPOSupported)
     include(CheckCCompilerFlag)
     include(CheckCXXCompilerFlag)
@@ -51,40 +50,26 @@ if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     check_cxx_compiler_flag("-flto" HAS_LTO_CXX)
 
     if (LTOSupported OR (HAS_LTO_C AND HAS_LTO_CXX))
-    # Check ThinLTO
-    check_c_compiler_flag("-flto=thin" HAS_THINLTO_C)
-    check_cxx_compiler_flag("-flto=thin" HAS_THINLTO_CXX)
-    if (HAS_THINLTO_C AND HAS_THINLTO_CXX)
-        message(STATUS "ThinLTO supported, using -flto=thin")
+        # Check ThinLTO
+        check_c_compiler_flag("-flto=thin" HAS_THINLTO_C)
+        check_cxx_compiler_flag("-flto=thin" HAS_THINLTO_CXX)
+        if (HAS_THINLTO_C AND HAS_THINLTO_CXX)
+            message(STATUS "ThinLTO supported, using -flto=thin")
 
-        add_compile_options(-flto=thin)
-        add_link_options(-flto=thin)
+            add_compile_options(-flto=thin)
+            add_link_options(-flto=thin)
+        else()
+            # ThinLTO is not supported
+            message(STATUS "ThinLTO not available, fallback to CMAKE IPO")
+            set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+        endif()
     else()
-        # ThinLTO is not supported
-        message(STATUS "ThinLTO not available, fallback to CMAKE IPO")
-        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
-    endif()
-    else()
-    message(STATUS "IPO not supported: ${LTOError}")
+        message(STATUS "IPO not supported: ${LTOError}")
     endif()
 endif()
 
-
-if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT MATCHES "AppleClang")
-    add_compile_options(-O3 -ffunction-sections -fdata-sections)
-    add_link_options(-Wl,--gc-sections)
-elseif (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-#    add_compile_options(/O2)
-else ()
-    add_compile_options(-O2)
-endif()
-
-if (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-    add_compile_options(/Zc:preprocessor)
-    add_compile_options(/Zc:__cplusplus)
-endif()
-
-set(PROFILING OFF)
+# AppleClang optimization flags (iOS-only)
+add_compile_options(-O2)
 
 add_library(${CMAKE_PROJECT_NAME} SHARED
     init.cpp
@@ -118,7 +103,6 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
     gles/loader.cpp
     config/cJSON.c
     config/config.cpp
-    config/gpu_utils.cpp
     config/settings.cpp
 )
 
@@ -133,33 +117,12 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
     spirv-cross-c
 )
 
-if(MACOS)
-    # iOS
-    target_link_libraries(${CMAKE_PROJECT_NAME} PUBLIC
-        "-F${CMAKE_SOURCE_DIR}/external"
-        "-framework libEGL"
-        "-framework libGLESv2"
-        "-framework Metal"
-        "-framework Foundation"
-        "-framework QuartzCore"
-    )
-elseif(ANDROID)
-    # Android
-    target_link_libraries(${CMAKE_PROJECT_NAME} PUBLIC
-        android
-        log
-    )
-    else()
-    # Linux — EGL/GLES are loaded dynamically via dlopen
-    target_link_libraries(${CMAKE_PROJECT_NAME} PUBLIC
-        ${CMAKE_DL_LIBS}
-    )
-endif()
-
-if (PROFILING)
-    find_package(Threads)
-    include_directories(${CMAKE_SOURCE_DIR}/3rdparty/perfetto/sdk)
-    add_library(perfetto STATIC ${CMAKE_SOURCE_DIR}/3rdparty/perfetto/sdk/perfetto.cc)
-    target_link_libraries(${CMAKE_PROJECT_NAME} perfetto ${CMAKE_THREAD_LIBS_INIT})
-    target_compile_definitions(${CMAKE_PROJECT_NAME} PUBLIC PROFILING=1)
-endif()
+# iOS-only framework linkage: ANGLE (libEGL/libGLESv2) on Metal + Apple system frameworks.
+target_link_libraries(${CMAKE_PROJECT_NAME} PUBLIC
+    "-F${CMAKE_SOURCE_DIR}/external"
+    "-framework libEGL"
+    "-framework libGLESv2"
+    "-framework Metal"
+    "-framework Foundation"
+    "-framework QuartzCore"
+)

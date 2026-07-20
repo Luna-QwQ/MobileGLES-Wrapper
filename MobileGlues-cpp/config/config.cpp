@@ -1,4 +1,4 @@
-// MobileGlues - config/config.cpp
+// MobileGLES - config/config.cpp
 // Copyright (c) 2025-2026 MobileGL-Dev
 // Licensed under the GNU Lesser General Public License v2.1:
 //   https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
@@ -18,7 +18,12 @@
 
 #define DEBUG 0
 
-char* DEFAULT_MG_DIRECTORY_PATH = "/sdcard/MG";
+// iOS-only: default to the app's sandboxed Documents/MG directory.
+// On iOS, getenv("HOME") returns the app's container root (e.g.
+// /var/mobile/Containers/Data/Application/<UUID>/). We append
+// "Documents/MG" so all MobileGLES files live in a writable,
+// user-visible location that survives app updates.
+char* DEFAULT_MG_DIRECTORY_PATH = nullptr;
 
 bool is_custom_mg_dir = false;
 char* mg_directory_path = nullptr;
@@ -37,11 +42,28 @@ char* concatenate(char* str1, char* str2) {
     return result;
 }
 
+static char* resolve_default_mg_directory() {
+    const char* home = getenv("HOME");
+    if (!home || home[0] == '\0') {
+        // Fallback: use the current working directory.
+        return strdup("MG");
+    }
+    std::string path = std::string(home) + "/Documents/MG";
+    return strdup(path.c_str());
+}
+
 int check_path() {
     if (!mg_directory_path) {
         char* var = getenv("MG_DIR_PATH");
         is_custom_mg_dir = var ? true : false;
-        mg_directory_path = var ? strdup(var) : DEFAULT_MG_DIRECTORY_PATH;
+        if (var) {
+            mg_directory_path = strdup(var);
+        } else {
+            if (!DEFAULT_MG_DIRECTORY_PATH) {
+                DEFAULT_MG_DIRECTORY_PATH = resolve_default_mg_directory();
+            }
+            mg_directory_path = strdup(DEFAULT_MG_DIRECTORY_PATH);
+        }
     }
     config_file_path = concatenate(mg_directory_path, "/config.json");
     log_file_path = concatenate(mg_directory_path, "/latest.log");
