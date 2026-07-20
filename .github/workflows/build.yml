@@ -5,7 +5,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
 
@@ -26,4 +26,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: MobileGLES-iOS-dylib
-          path: /Users/runner/work/MobileGLES/MobileGLES/MobileGlues-cpp/build
+          path: MobileGlues-cpp/build/*.dylib
+          if-no-files-found: error
