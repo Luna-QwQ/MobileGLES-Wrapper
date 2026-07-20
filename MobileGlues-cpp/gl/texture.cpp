@@ -254,13 +254,12 @@ static inline __attribute__((always_inline)) void ActivateTextureUnit(int unit) 
     CurrentTextureUnitIndex = unit;
 }
 
-inline __attribute__((always_inline)) int GetCurrentTextureUnitIndex() {
+int GetCurrentTextureUnitIndex() {
     return CurrentTextureUnitIndex;
 }
 
-// Marked inline so the compiler can inline into the glBindTexture / MarkTextureObjectForDeletion
-// hot paths without a cross-TU call.
-inline __attribute__((always_inline)) TextureUnit& GetTextureUnit(int unit) {
+// Used by DSAWrapper.cpp, MultiBindWrapper.cpp - needs external linkage
+TextureUnit& GetTextureUnit(int unit) {
     if (unit < 0 || unit >= MAX_TEXTURE_IMAGE_UNITS) {
         LOG_E("Invalid texture unit: %d", unit);
         return TextureUnits[0];
