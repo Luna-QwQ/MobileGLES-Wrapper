@@ -49,6 +49,9 @@
 
 #define DEBUG 0
 
+// Use MAX_TEXTURE_UNITS from state.h (96) instead of local definition
+// The tracking arrays are defined in drawing.cpp
+
 // ============================================================================
 // Internal helpers: mip level size calculation
 // ============================================================================
@@ -243,8 +246,8 @@ TextureObject* GetOrCreateTextureObject(GLuint index) {
     return obj;
 }
 
-static void ActivateTextureUnit(int unit) {
-    if (unit < 0 || unit >= MAX_TEXTURE_IMAGE_UNITS) {
+static inline __attribute__((always_inline)) void ActivateTextureUnit(int unit) {
+    if ((unsigned)unit >= (unsigned)MAX_TEXTURE_IMAGE_UNITS) [[unlikely]] {
         LOG_E("Invalid texture unit: %d", unit);
         return;
     }
@@ -255,10 +258,8 @@ int GetCurrentTextureUnitIndex() {
     return CurrentTextureUnitIndex;
 }
 
-// Marked static so the compiler knows these have internal linkage and
-// can be inlined into the glBindTexture / MarkTextureObjectForDeletion
-// hot paths without a cross-TU call.
-static TextureUnit& GetTextureUnit(int unit) {
+// Used by DSAWrapper.cpp, MultiBindWrapper.cpp - needs external linkage
+TextureUnit& GetTextureUnit(int unit) {
     if (unit < 0 || unit >= MAX_TEXTURE_IMAGE_UNITS) {
         LOG_E("Invalid texture unit: %d", unit);
         return TextureUnits[0];
@@ -711,6 +712,7 @@ struct ScopedPackTight {
     GLint prevSkipPixels;
     GLint prevSkipRows;
     GLint prevAlignment;
+    bool needsRestore;
 
     ScopedPackTight() {
         // Snapshot from CPU-side cache (see ScopedUnpackTight rationale):
@@ -720,15 +722,22 @@ struct ScopedPackTight {
         prevSkipRows   = GLState.texture.packSkipRows;
         prevAlignment  = GLState.texture.packAlignment;
 
-        // Raw GLES.glPixelStorei() bypasses our wrapper; GLState keeps the
-        // caller-visible pack values so the post-readback CPU relayout uses
-        // the correct destination stride/skip.
-        GLES.glPixelStorei(GL_PACK_ROW_LENGTH, 0);
-        GLES.glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
-        GLES.glPixelStorei(GL_PACK_SKIP_ROWS, 0);
-        GLES.glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        // If the state is already tight (the common case when the app doesn't
+        // touch GL_PACK_* settings), skip the 4+4 glPixelStorei calls.
+        needsRestore = (prevRowLength != 0 || prevSkipPixels != 0 || prevSkipRows != 0 ||
+                        prevAlignment != 1);
+        if (needsRestore) {
+            // Raw GLES.glPixelStorei() bypasses our wrapper; GLState keeps the
+            // caller-visible pack values so the post-readback CPU relayout uses
+            // the correct destination stride/skip.
+            GLES.glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+            GLES.glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+            GLES.glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+            GLES.glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        }
     }
     ~ScopedPackTight() {
+        if (!needsRestore) return;
         GLES.glPixelStorei(GL_PACK_ROW_LENGTH, prevRowLength);
         GLES.glPixelStorei(GL_PACK_SKIP_PIXELS, prevSkipPixels);
         GLES.glPixelStorei(GL_PACK_SKIP_ROWS, prevSkipRows);
@@ -1021,6 +1030,36 @@ static const void* swizzle_pixels_for_unpack(GLenum internalFormat, GLenum& form
     return out;
 }
 
+static inline bool is_tracked_target(GLenum target) {
+    switch (target) {
+    case GL_TEXTURE_2D:
+    case GL_TEXTURE_CUBE_MAP:
+    case GL_TEXTURE_2D_ARRAY:
+    case GL_TEXTURE_3D:
+    case GL_TEXTURE_2D_MULTISAMPLE:
+    case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+    case GL_TEXTURE_CUBE_MAP_ARRAY:
+    case GL_TEXTURE_RECTANGLE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static inline GLuint* get_tracked_binding(GLenum target, int unit) {
+    switch (target) {
+    case GL_TEXTURE_2D:               return &g_tracked_tex2d_binding[unit];
+    case GL_TEXTURE_CUBE_MAP:         return &g_tracked_tex_cube_binding[unit];
+    case GL_TEXTURE_2D_ARRAY:         return &g_tracked_tex_2d_array_binding[unit];
+    case GL_TEXTURE_3D:               return &g_tracked_tex_3d_binding[unit];
+    case GL_TEXTURE_2D_MULTISAMPLE:   return &g_tracked_tex_2d_ms_binding[unit];
+    case GL_TEXTURE_2D_MULTISAMPLE_ARRAY: return &g_tracked_tex_2d_ms_array_binding[unit];
+    case GL_TEXTURE_CUBE_MAP_ARRAY:   return &g_tracked_tex_cube_array_binding[unit];
+    case GL_TEXTURE_RECTANGLE:        return &g_tracked_tex_rect_binding[unit];
+    default:                          return nullptr;
+    }
+}
+
 void glBindTexture(GLenum target, GLuint texture) {
     LOG()
     LOG_D("glBindTexture(%s, %d)", glEnumToString(target), texture)
@@ -1028,22 +1067,19 @@ void glBindTexture(GLenum target, GLuint texture) {
 
     const int currentUnitIndex = GetCurrentTextureUnitIndex();
 
-    // Short-circuit for GL_TEXTURE_2D: if the same texture is already bound to
-    // this unit, skip both the GLES call and the bookkeeping.
-    // g_tracked_tex2d_binding is kept in sync with GLES state by:
-    //  - glBindTexture (here), glDeleteTextures (invalidates to 0),
-    //  - FSR1's GLStateGuard (restores + syncs cache on scope exit).
-    if (target == GL_TEXTURE_2D &&
-        g_tracked_tex2d_binding[currentUnitIndex] == texture) [[likely]] {
-        return;
+    if (is_tracked_target(target)) {
+        GLuint* tracked = get_tracked_binding(target, currentUnitIndex);
+        if (tracked && *tracked == texture) [[likely]] {
+            return;
+        }
     }
 
     GLES.glBindTexture(target, texture);
     CHECK_GL_ERROR_NO_INIT
 
-    // Track GL_TEXTURE_2D binding per-unit to avoid glGetIntegerv GPU queries
-    if (target == GL_TEXTURE_2D) {
-        g_tracked_tex2d_binding[currentUnitIndex] = texture;
+    if (is_tracked_target(target)) {
+        GLuint* tracked = get_tracked_binding(target, currentUnitIndex);
+        if (tracked) *tracked = texture;
     }
 
     auto& currentUnit = GetTextureUnit(currentUnitIndex);
@@ -1077,11 +1113,16 @@ void glDeleteTextures(GLsizei n, const GLuint* textures) {
 
     for (GLsizei i = 0; i < n; ++i) {
         MarkTextureObjectForDeletion(textures[i]);
-        // Invalidate CPU-side texture binding tracking
+        // Invalidate CPU-side texture binding tracking for all tracked targets
         for (int unit = 0; unit < MAX_TEXTURE_IMAGE_UNITS; ++unit) {
-            if (g_tracked_tex2d_binding[unit] == textures[i]) {
-                g_tracked_tex2d_binding[unit] = 0;
-            }
+            if (g_tracked_tex2d_binding[unit] == textures[i]) g_tracked_tex2d_binding[unit] = 0;
+            if (g_tracked_tex_cube_binding[unit] == textures[i]) g_tracked_tex_cube_binding[unit] = 0;
+            if (g_tracked_tex_2d_array_binding[unit] == textures[i]) g_tracked_tex_2d_array_binding[unit] = 0;
+            if (g_tracked_tex_3d_binding[unit] == textures[i]) g_tracked_tex_3d_binding[unit] = 0;
+            if (g_tracked_tex_2d_ms_binding[unit] == textures[i]) g_tracked_tex_2d_ms_binding[unit] = 0;
+            if (g_tracked_tex_2d_ms_array_binding[unit] == textures[i]) g_tracked_tex_2d_ms_array_binding[unit] = 0;
+            if (g_tracked_tex_cube_array_binding[unit] == textures[i]) g_tracked_tex_cube_array_binding[unit] = 0;
+            if (g_tracked_tex_rect_binding[unit] == textures[i]) g_tracked_tex_rect_binding[unit] = 0;
         }
     }
 }
@@ -1559,10 +1600,11 @@ void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffse
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, tempDrawFBO);
 
         GLint currentTex;
-        // Use CPU-side tracked texture binding for 2D (common case),
-        // fall back to glGetIntegerv for cubemap targets
-        if (target == GL_TEXTURE_2D) {
-            currentTex = g_tracked_tex2d_binding[GetCurrentTextureUnitIndex()];
+        // Use CPU-side tracked texture binding for tracked targets,
+        // fall back to glGetIntegerv for others
+        GLuint* tracked = get_tracked_binding(target, GetCurrentTextureUnitIndex());
+        if (tracked) {
+            currentTex = *tracked;
         } else {
             glGetIntegerv(get_binding_for_target(target), &currentTex);
         }

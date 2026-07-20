@@ -31,6 +31,7 @@
 #include "log.h"
 #include "../gles/loader.h"
 #include "mg.h"
+#include "state.h"  // for MAX_TEXTURE_UNITS
 
 struct SamplerInfo {
     GLint locWidth;
@@ -40,7 +41,15 @@ struct SamplerInfo {
 
 // Texture binding tracking per unit to avoid glGetIntegerv GPU queries.
 // Updated by glBindTexture (texture.cpp), read by setupBufferTextureUniforms (drawing.cpp).
-extern GLuint g_tracked_tex2d_binding[32];
+// Use MAX_TEXTURE_UNITS from state.h for consistency.
+extern GLuint g_tracked_tex2d_binding[MAX_TEXTURE_UNITS];
+extern GLuint g_tracked_tex_cube_binding[MAX_TEXTURE_UNITS];
+extern GLuint g_tracked_tex_2d_array_binding[MAX_TEXTURE_UNITS];
+extern GLuint g_tracked_tex_3d_binding[MAX_TEXTURE_UNITS];
+extern GLuint g_tracked_tex_2d_ms_binding[MAX_TEXTURE_UNITS];
+extern GLuint g_tracked_tex_2d_ms_array_binding[MAX_TEXTURE_UNITS];
+extern GLuint g_tracked_tex_cube_array_binding[MAX_TEXTURE_UNITS];
+extern GLuint g_tracked_tex_rect_binding[MAX_TEXTURE_UNITS];
 
 #ifdef __cplusplus
 extern "C"

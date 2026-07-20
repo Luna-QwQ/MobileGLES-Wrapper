@@ -249,7 +249,7 @@ static std::array<GLuint, BINDING_COUNT> g_bound_buffers_arr = {0};
 // Buffer Map Helpers: Capacity & Lifecycle
 // ============================================================================
 
-static inline int ensure_buffer_capacity(GLuint id) {
+static inline __attribute__((always_inline)) int ensure_buffer_capacity(GLuint id) {
     if (id < (GLuint)g_gen_buffers.size()) [[likely]] return 0;
     g_gen_buffers.resize(id + 1, 0);
     g_gen_buffer_exists.resize(id + 1, 0);
@@ -257,7 +257,7 @@ static inline int ensure_buffer_capacity(GLuint id) {
     return 0;
 }
 
-static inline int ensure_array_capacity(GLuint id) {
+static inline __attribute__((always_inline)) int ensure_array_capacity(GLuint id) {
     if (id < (GLuint)g_gen_arrays.size()) [[likely]] return 0;
     g_gen_arrays.resize(id + 1, 0);
     g_gen_array_exists.resize(id + 1, 0);
@@ -311,7 +311,7 @@ GLuint find_real_buffer(GLuint key) {
 // Combined lookup: returns {real_buffer, exists} in a single bounds check.
 // g_gen_buffers and g_gen_buffer_exists are always resized together,
 // so checking one is sufficient for both.
-static inline std::pair<GLuint, bool> find_real_buffer_with_exists(GLuint key) {
+static inline __attribute__((always_inline)) std::pair<GLuint, bool> find_real_buffer_with_exists(GLuint key) {
     if (key < g_gen_buffers.size() && g_gen_buffer_exists[key]) [[likely]]
         return {g_gen_buffers[key], true};
     return {0, false};
@@ -337,7 +337,7 @@ void mg_update_atomic_counters_active_flag() {
 // has already verified the buffer exists (e.g. after find_real_buffer_with_exists).
 // Avoids redundant ensure_buffer_capacity in hot paths like glBindBuffer,
 // glBindBufferRange, glBindBufferBase, glBindVertexBuffer, glTexBuffer.
-static inline void modify_buffer_direct(GLuint key, GLuint value) {
+void modify_buffer_direct(GLuint key, GLuint value) {
     g_gen_buffers[key] = value;
 }
 

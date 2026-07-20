@@ -204,21 +204,17 @@ void prepare_indirect_buffer(const GLsizei* counts, GLenum type, const void* con
 
 void mg_glMultiDrawElements_drawelements(GLenum mode, const GLsizei* count, GLenum type, const void* const* indices,
                                          GLsizei primcount) {
-    PREPARE_FOR_DRAW();
+    // PREPARE_FOR_DRAW() is a no-op; removed to reduce call overhead on hot path.
 
     for (GLsizei i = 0; i < primcount; ++i) {
         const GLsizei c = count[i];
-        if (c > 0) {
-            GLES.glDrawElements(mode, c, type, indices[i]);
-        }
+        if (c > 0) GLES.glDrawElements(mode, c, type, indices[i]);
     }
 }
 
 void mg_glMultiDrawElementsBaseVertex_drawelements(GLenum mode, const GLsizei* counts, GLenum type,
                                                    const void* const* indices, GLsizei primcount,
                                                    const GLint* basevertex) {
-    PREPARE_FOR_DRAW();
-
     // Hoist index-size computation out of the per-draw loop: `type` is loop-invariant,
     // so computing it once before the loop avoids primcount redundant switch dispatches.
     size_t indexSize;
@@ -313,7 +309,6 @@ void mg_glMultiDrawElementsBaseVertex_drawelements(GLenum mode, const GLsizei* c
 
 void mg_glMultiDrawElements_indirect(GLenum mode, const GLsizei* count, GLenum type, const void* const* indices,
                                      GLsizei primcount) {
-    PREPARE_FOR_DRAW();
 
     prepare_indirect_buffer(count, type, indices, primcount, 0);
 
@@ -327,7 +322,6 @@ void mg_glMultiDrawElements_indirect(GLenum mode, const GLsizei* count, GLenum t
 
 void mg_glMultiDrawElementsBaseVertex_indirect(GLenum mode, const GLsizei* counts, GLenum type, const void* const* indices,
                                                GLsizei primcount, const GLint* basevertex) {
-    PREPARE_FOR_DRAW();
 
     prepare_indirect_buffer(counts, type, indices, primcount, basevertex);
 
@@ -348,7 +342,6 @@ void mg_glMultiDrawElementsBaseVertex_indirect(GLenum mode, const GLsizei* count
 
 void mg_glMultiDrawElements_multiindirect(GLenum mode, const GLsizei* count, GLenum type, const void* const* indices,
                                           GLsizei primcount) {
-    PREPARE_FOR_DRAW();
 
     prepare_indirect_buffer(count, type, indices, primcount, 0);
 
@@ -360,7 +353,6 @@ void mg_glMultiDrawElements_multiindirect(GLenum mode, const GLsizei* count, GLe
 void mg_glMultiDrawElementsBaseVertex_multiindirect(GLenum mode, const GLsizei* counts, GLenum type,
                                                     const void* const* indices, GLsizei primcount,
                                                     const GLint* basevertex) {
-    PREPARE_FOR_DRAW();
 
     prepare_indirect_buffer(counts, type, indices, primcount, basevertex);
 
@@ -377,7 +369,6 @@ void mg_glMultiDrawElementsBaseVertex_multiindirect(GLenum mode, const GLsizei* 
 
 void mg_glMultiDrawElements_basevertex(GLenum mode, const GLsizei* count, GLenum type, const void* const* indices,
                                        GLsizei primcount) {
-    PREPARE_FOR_DRAW();
 
     for (GLsizei i = 0; i < primcount; ++i) {
         const GLsizei c = count[i];
@@ -389,7 +380,6 @@ void mg_glMultiDrawElements_basevertex(GLenum mode, const GLsizei* count, GLenum
 
 void mg_glMultiDrawElementsBaseVertex_basevertex(GLenum mode, const GLsizei* counts, GLenum type, const void* const* indices,
                                                  GLsizei primcount, const GLint* basevertex) {
-    PREPARE_FOR_DRAW();
 
     for (GLsizei i = 0; i < primcount; ++i) {
         const GLsizei count = counts[i];
@@ -406,7 +396,6 @@ void mg_glMultiDrawElementsBaseVertex_basevertex(GLenum mode, const GLsizei* cou
 
 void mg_glMultiDrawElements_compute(GLenum mode, const GLsizei* count, GLenum type, const void* const* indices,
                                     GLsizei primcount) {
-    PREPARE_FOR_DRAW();
 
     for (GLsizei i = 0; i < primcount; ++i) {
         const GLsizei c = count[i];
@@ -589,7 +578,6 @@ GLAPI GLAPIENTRY void mg_glMultiDrawElementsBaseVertex_compute(GLenum mode, cons
                                                                const void* const* indices, GLsizei primcount,
                                                                const GLint* basevertex) {
     LOG()
-    PREPARE_FOR_DRAW();
 
     INIT_CHECK_GL_ERROR
 

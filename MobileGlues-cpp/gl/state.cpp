@@ -81,7 +81,7 @@ void ErrorState::Clear() {
 
 // --- Rasterization ---
 
-void RenderState::SetViewport(int32_t x, int32_t y, int32_t width, int32_t height) {
+inline __attribute__((always_inline)) void RenderState::SetViewport(int32_t x, int32_t y, int32_t width, int32_t height) {
     m_parameters.Viewport[0] = x;
     m_parameters.Viewport[1] = y;
     m_parameters.Viewport[2] = width;
@@ -89,48 +89,48 @@ void RenderState::SetViewport(int32_t x, int32_t y, int32_t width, int32_t heigh
     ++m_version;
 }
 
-void RenderState::GetViewport(int32_t* out) const {
+inline __attribute__((always_inline)) void RenderState::GetViewport(int32_t* out) const {
     out[0] = m_parameters.Viewport[0];
     out[1] = m_parameters.Viewport[1];
     out[2] = m_parameters.Viewport[2];
     out[3] = m_parameters.Viewport[3];
 }
 
-void RenderState::SetLineWidth(float width) {
+inline __attribute__((always_inline)) void RenderState::SetLineWidth(float width) {
     m_parameters.LineWidth = width;
     ++m_version;
 }
 
-float RenderState::GetLineWidth() const {
+inline __attribute__((always_inline)) float RenderState::GetLineWidth() const {
     return m_parameters.LineWidth;
 }
 
-void RenderState::SetPointSize(float size) {
+inline __attribute__((always_inline)) void RenderState::SetPointSize(float size) {
     m_parameters.PointSize = size;
     ++m_version;
 }
 
-float RenderState::GetPointSize() const {
+inline __attribute__((always_inline)) float RenderState::GetPointSize() const {
     return m_parameters.PointSize;
 }
 
-void RenderState::SetPolygonOffset(float factor, float units) {
+inline __attribute__((always_inline)) void RenderState::SetPolygonOffset(float factor, float units) {
     m_parameters.PolygonOffsetFactor = factor;
     m_parameters.PolygonOffsetUnits = units;
     ++m_version;
 }
 
-float RenderState::GetPolygonOffsetFactor() const {
+inline __attribute__((always_inline)) float RenderState::GetPolygonOffsetFactor() const {
     return m_parameters.PolygonOffsetFactor;
 }
 
-float RenderState::GetPolygonOffsetUnits() const {
+inline __attribute__((always_inline)) float RenderState::GetPolygonOffsetUnits() const {
     return m_parameters.PolygonOffsetUnits;
 }
 
 // --- Capabilities ---
 
-void RenderState::SetCapability(Capability cap, bool enabled) {
+inline __attribute__((always_inline)) void RenderState::SetCapability(Capability cap, bool enabled) {
 #define SET_CAP(capName, field) \
     case Capability::capName: \
         m_parameters.field = enabled; \
@@ -173,7 +173,7 @@ void RenderState::SetCapability(Capability cap, bool enabled) {
 #undef SET_CAP
 }
 
-bool RenderState::IsCapabilityEnabled(Capability cap) const {
+inline __attribute__((always_inline)) bool RenderState::IsCapabilityEnabled(Capability cap) const {
 #define RETURN_CAP(capName, field) \
     case Capability::capName: return m_parameters.field;
     switch (cap) {
@@ -207,14 +207,14 @@ bool RenderState::IsCapabilityEnabled(Capability cap) const {
 #undef RETURN_CAP
 }
 
-void RenderState::SetCapabilityIndexed(Capability cap, uint32_t index, bool enabled) {
+inline __attribute__((always_inline)) void RenderState::SetCapabilityIndexed(Capability cap, uint32_t index, bool enabled) {
     if (cap != Capability::Blend) return;
     if (index >= static_cast<uint32_t>(MAX_DRAW_BUFFERS)) return;
     m_parameters.BlendStates[index].Enabled = enabled;
     ++m_version;
 }
 
-bool RenderState::IsCapabilityEnabledIndexed(Capability cap, uint32_t index) const {
+inline __attribute__((always_inline)) bool RenderState::IsCapabilityEnabledIndexed(Capability cap, uint32_t index) const {
     if (cap != Capability::Blend) return false;
     if (index >= static_cast<uint32_t>(MAX_DRAW_BUFFERS)) return false;
     return m_parameters.BlendStates[index].Enabled;
