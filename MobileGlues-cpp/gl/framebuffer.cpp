@@ -143,22 +143,36 @@ extern "C" GLAPI GLAPIENTRY void glDeleteFramebuffers(GLsizei n, const GLuint *f
 
 extern "C" GLAPI GLAPIENTRY void glBindFramebuffer(GLenum target, GLuint framebuffer) {
     LOG()
-    GLES.glBindFramebuffer(target, framebuffer);
 
-    // Hot path: most callers pass GL_FRAMEBUFFER (0x8D40), which binds to
-    // both draw and read targets. Restructured so the common case is a
-    // single branch instead of two OR-checks that each re-test the same
-    // value. The DRAW/READ-only splits are cold by comparison.
+    // Hot path: redundant rebind — skip both the GLES driver call and the
+    // CPU state update, mirroring the short-circuit in glBindTexture() /
+    // glActiveTexture(). Safe because fb.drawFBO / fb.readFBO are mutated
+    // only by this function and by glDeleteFramebuffers (which zeroes the
+    // cache when the bound FBO is deleted); FSR1's GLStateGuard restores
+    // GLES state to match the CPU cache before returning to user code, so
+    // the cache stays consistent across FSR1 runs.
     auto &fb = GLState.framebuffer;
     if (target == GL_FRAMEBUFFER) [[likely]] {
+        if (fb.drawFBO == framebuffer && fb.readFBO == framebuffer) [[likely]] {
+            return;
+        }
+        GLES.glBindFramebuffer(target, framebuffer);
         fb.drawFBO = framebuffer;
         fb.readFBO = framebuffer;
         GLState.currentDrawFBO = framebuffer;
     } else if (target == GL_DRAW_FRAMEBUFFER) {
-        fb.drawFBO = framebuffer;
-        GLState.currentDrawFBO = framebuffer;
+        if (fb.drawFBO != framebuffer) {
+            GLES.glBindFramebuffer(target, framebuffer);
+            fb.drawFBO = framebuffer;
+            GLState.currentDrawFBO = framebuffer;
+        }
     } else if (target == GL_READ_FRAMEBUFFER) {
-        fb.readFBO = framebuffer;
+        if (fb.readFBO != framebuffer) {
+            GLES.glBindFramebuffer(target, framebuffer);
+            fb.readFBO = framebuffer;
+        }
+    } else {
+        GLES.glBindFramebuffer(target, framebuffer);
     }
 
     STATE_LOG("glBindFramebuffer: target=0x%X, fbo=%u", target, framebuffer);
