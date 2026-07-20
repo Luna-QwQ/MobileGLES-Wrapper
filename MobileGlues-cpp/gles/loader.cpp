@@ -28,65 +28,16 @@ void *gles = nullptr, *egl = nullptr;
 
 struct gles_func_t g_gles_func;
 
-static const char* path_prefix[] = {
-    "", "/opt/vc/lib/", "/usr/local/lib/", "/usr/lib/", nullptr,
-};
-
-static const char* lib_ext[] = {
-#ifndef NO_GBM
-    "so.19",
-#endif
-    "so",    "so.1", "so.2", "dylib", "dll", nullptr,
-};
-
-static const char* gles3_lib[] = {"libGLESv3_CM", "libGLESv3", nullptr};
-
-static const char* egl_lib[] = {
-#if defined(BCMHOST)
-    "libbrcmEGL",
-#endif
-    "libEGL", nullptr};
-
-const char* GLES_ANGLE = "libGLESv2_angle.so";
-const char* EGL_ANGLE = "libEGL_angle.so";
-
-void* open_lib(const char** names, const char* override) {
-    void* lib = nullptr;
-
-    char path_name[PATH_MAX + 1];
-    int flags = RTLD_LOCAL | RTLD_NOW;
-    if (override) {
-        if ((lib = dlopen(override, flags))) {
-            strncpy(path_name, override, PATH_MAX);
-            LOG_D("LIBGL:loaded: %s\n", path_name)
-            return lib;
-        } else {
-            LOG_E("LIBGL_GLES override failed: %s\n", dlerror())
-        }
-    }
-    for (int p = 0; path_prefix[p]; p++) {
-        for (int i = 0; names[i]; i++) {
-            for (int e = 0; lib_ext[e]; e++) {
-                snprintf(path_name, PATH_MAX, "%s%s.%s", path_prefix[p], names[i], lib_ext[e]);
-                if ((lib = dlopen(path_name, flags))) {
-                    return lib;
-                }
-            }
-        }
-    }
-    return lib;
-}
-
+// iOS-only loader.
+// On iOS, ANGLE is statically linked as a framework (libEGL.framework /
+// libGLESv2.framework built atop Metal). There is nothing to dlopen.
+// Symbol resolution happens through the RTLD_MAIN_ONLY pseudo-handle
+// (computed as (void*)(~(uintptr_t)0)) which queries the main executable
+// image that the framework is linked into. proc_address() uses this
+// handle with dlsym() to look up EGL/GLES symbols at runtime.
 void load_libs() {
-#ifndef __APPLE__
-    const char* gles_override = global_settings.angle == AngleMode::Enabled ? GLES_ANGLE : nullptr;
-    const char* egl_override = global_settings.angle == AngleMode::Enabled ? EGL_ANGLE : nullptr;
-    gles = open_lib(gles3_lib, gles_override);
-    egl = open_lib(egl_lib, egl_override);
-#else
     gles = (void*)(~(uintptr_t)0);
     egl = (void*)(~(uintptr_t)0);
-#endif
 }
 
 void* proc_address(void* lib, const char* name) {

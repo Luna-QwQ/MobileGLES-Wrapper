@@ -1,4 +1,4 @@
-// MobileGlues - main.cpp
+// MobileGLES - main.cpp
 // Copyright (c) 2025-2026 MobileGL-Dev
 // Licensed under the GNU Lesser General Public License v2.1:
 //   https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
@@ -20,9 +20,6 @@
 
 #define DEBUG 0
 
-#ifndef __APPLE__
-__attribute__((used))
-#endif
 const char* license = "GNU LGPL-2.1 License";
 
 void init_config() {
@@ -30,23 +27,9 @@ void init_config() {
 }
 
 void show_license() {
-    LOG_V("The Open Source License of MobileGlues: ");
+    LOG_V("The Open Source License of MobileGLES: ");
     LOG_V("  %s", license);
 }
-
-#if PROFILING
-
-PERFETTO_TRACK_EVENT_STATIC_STORAGE();
-
-void init_perfetto() {
-    perfetto::TracingInitArgs args;
-
-    args.backends |= perfetto::kSystemBackend;
-
-    perfetto::Tracing::Initialize(args);
-    perfetto::TrackEvent::Register();
-}
-#endif
 
 void proc_init() {
     init_config();
@@ -66,13 +49,5 @@ void proc_init() {
 
     init_settings_post();
 
-#if PROFILING
-    init_perfetto();
-#endif
-
-    // Cleanup
-#ifndef __APPLE__
-    destroy_temp_egl_ctx();
-#endif
     g_initialized = 1;
 }

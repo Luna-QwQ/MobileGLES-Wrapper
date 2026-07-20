@@ -1,24 +1,19 @@
-// MobileGlues - config/settings.h
+// MobileGLES - config/settings.h
 // Copyright (c) 2025-2026 MobileGL-Dev
 // Licensed under the GNU Lesser General Public License v2.1:
 //   https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
 // SPDX-License-Identifier: LGPL-2.1-only
 // End of Source File Header
 
-#ifndef MOBILEGLUES_PLUGIN_SETTINGS_H
-#define MOBILEGLUES_PLUGIN_SETTINGS_H
+#ifndef MOBILEGLES_PLUGIN_SETTINGS_H
+#define MOBILEGLES_PLUGIN_SETTINGS_H
 
 #include <string>
 #include <vector>
 #include <sstream>
 #include <algorithm>
 #include <cctype>
-
-#if !defined(__APPLE__)
-#include <stddef.h>
-#else
-typedef unsigned long size_t;
-#endif
+#include <cstddef>
 
 #define DEFAULT_GL_VERSION 40
 
@@ -179,4 +174,4 @@ void init_settings_post();
 std::string dump_settings_string(std::string prefix = "");
 void set_multidraw_setting();
 
-#endif // MOBILEGLUES_PLUGIN_SETTINGS_H
+#endif // MOBILEGLES_PLUGIN_SETTINGS_H
