@@ -1,109 +1,103 @@
 # MobileGLES
 
-> **Unofficial fork.** MobileGLES is an **unofficial** community fork of the
-> [MobileGlues](https://github.com/MobileGL-Dev/MobileGlues) project
-> ("(on) Mobile, GL uses ES"). It is not affiliated with, endorsed by, or
-> maintained by the upstream MobileGlues team. All MobileGLES-specific changes
-> are the responsibility of this fork's contributors.
+> **非官方分支。** MobileGLES 是
+> [MobileGlues](https://github.com/MobileGL-Dev/MobileGlues)
+> 项目（"(on) Mobile, GL uses ES"）的**非官方**社区分支。它与上游
+> MobileGlues 团队不存在隶属、背书或维护关系，亦不由其维护。所有
+> MobileGLES 自身的改动均由本分支的贡献者负责。
 
-MobileGLES is a desktop OpenGL compatibility layer that runs on top of a host
-**OpenGL ES 3.0** backend, with running Minecraft: Java Edition in mind. It
-translates desktop GL / GLSL calls into OpenGL ES 3.0 / GLSL ES 3.00 using
-glslang + SPIRV-Cross, so that Java Edition's OpenGL renderer can run on
-mobile-class GPUs.
+MobileGLES 是一个桌面 OpenGL 兼容层，运行在宿主 **OpenGL ES 3.0** 后端
+之上，旨在让 Minecraft: Java Edition 能够在移动级 GPU 上运行。它通过
+glslang + SPIRV-Cross 将桌面 GL / GLSL 调用翻译为 OpenGL ES 3.0 /
+GLSL ES 3.00，从而让 Java 版的 OpenGL 渲染器在移动类 GPU 上跑起来。
 
-## OpenGL ES 3.0 only
+## 仅支持 OpenGL ES 3.0
 
-MobileGLES targets **OpenGL ES 3.0 exclusively**.
+MobileGLES **仅以 OpenGL ES 3.0 为目标**。
 
-- **GLES 3.1 and GLES 3.2 support have been removed.** The host backend version
-  reported to the layer is clamped to 3.0, and every version-branching code path
-  takes the GLES 3.0 route.
-- Features that are not part of core OpenGL ES 3.0 (compute shaders, SSBO-only
-  paths, texture buffers, core `glDrawElementsBaseVertex`, etc.) are either
-  **emulated in software** or used through **EXT/OES extensions** when the host
-  driver exposes them — never through a 3.1/3.2 core dependency.
-- The shading language version exposed to the application always reflects the
-  GLES 3.0 baseline (`#version 300 es` / GLSL `4.00`).
-- A host that only advertises OpenGL ES 3.0 is fully supported; a host that
-  advertises 3.1/3.2 is treated as 3.0 by the layer.
+- **已移除 GLES 3.1 与 GLES 3.2 支持。** 层所感知到的宿主后端版本会被
+  强制钳制到 3.0，所有按版本分支的代码路径一律走 GLES 3.0 路线。
+- 不属于 OpenGL ES 3.0 核心的功能（计算着色器、仅 SSBO 路径、纹理缓冲
+  区、核心版 `glDrawElementsBaseVertex` 等），要么**在软件层模拟**，
+  要么在宿主驱动暴露相应扩展时通过 **EXT/OES 扩展**使用——绝不会通过
+  3.1/3.2 的核心依赖来使用。
+- 暴露给应用程序的着色语言版本始终反映 GLES 3.0 基线
+  （`#version 300 es` / GLSL `4.00`）。
+- 仅声明支持 OpenGL ES 3.0 的宿主被完全支持；声明 3.1/3.2 的宿主会被
+  本层视作 3.0。
 
-If the host reports a version lower than 3.0, MobileGLES logs that the version
-is unsupported and refuses to make use of unavailable features.
+如果宿主报告的版本低于 3.0，MobileGLES 会在日志中记录该版本不受支持，
+并拒绝使用任何不可用的特性。
 
-## Platform scope: iOS exclusively
+## 平台范围：仅限 iOS
 
-MobileGLES targets **iOS exclusively**. It refuses to build or run on any other
-platform (Android, Linux, macOS desktop, Windows):
+MobileGLES **仅以 iOS 为目标平台**，拒绝在任何其他平台
+（Android、Linux、macOS 桌面、Windows）上构建或运行：
 
-- The CMake configuration emits a fatal error on non-Apple platforms.
-- A compile-time guard (`TARGET_OS_IPHONE`) rejects non-iOS Apple targets such
-  as macOS desktop.
-- It relies on the prebuilt **ANGLE** frameworks (`libEGL.framework`,
-  `libGLESv2.framework`) built atop **Metal**, which are statically linked into
-  the host iOS application. There is no `dlopen` at runtime — EGL/GLES symbols
-  are resolved through the main executable image.
+- CMake 配置会在非 Apple 平台上发出致命错误。
+- 编译期检查（`TARGET_OS_IPHONE`）会拒绝 macOS 桌面等非 iOS 的 Apple
+  目标。
+- 它依赖预构建的 **ANGLE** 框架（`libEGL.framework`、
+  `libGLESv2.framework`，基于 **Metal** 构建），并静态链接进宿主 iOS
+  应用。运行时不进行 `dlopen`——EGL/GLES 符号通过主可执行镜像解析。
 
-### iOS build optimizations
+### iOS 构建优化
 
-The iOS build applies a number of platform-specific optimizations:
+iOS 构建应用了若干平台相关的优化：
 
-- **ThinLTO** (link-time optimization) when the toolchain supports it, falling
-  back to full IPO.
-- `-O2` as the baseline, plus `-ffunction-sections -fdata-sections` together
-  with `-Wl,-dead_strip` to strip unreachable code/data and shrink the embedded
-  dylib.
-- `-fvisibility-inlines-hidden` and `-fomit-frame-pointer` for smaller, faster
-  arm64 code.
-- An explicit **GLES 3.0 EGL context** (`EGL_OPENGL_ES3_BIT`,
-  `EGL_CONTEXT_CLIENT_VERSION = 3`) instead of an ES2 context.
+- 在工具链支持时启用 **ThinLTO**（链接期优化），否则回退到完整 IPO。
+- 以 `-O2` 为基线，并配合 `-ffunction-sections -fdata-sections` 与
+  `-Wl,-dead_strip` 去除不可达代码/数据，缩小内嵌 dylib 体积。
+- 使用 `-fvisibility-inlines-hidden` 与 `-fomit-frame-pointer` 生成更
+  小、更快的 arm64 代码。
+- 显式请求 **GLES 3.0 EGL 上下文**（`EGL_OPENGL_ES3_BIT`、
+  `EGL_CONTEXT_CLIENT_VERSION = 3`），而非 ES2 上下文。
 
-## For shader developers
+## 致着色器开发者
 
-1. MobileGLES automatically:
-   - Converts desktop GLSL → GLSL ES 3.00
-   - Removes `layout(binding)` syntax
-   - Handles version directives
-   - Always declare precision explicitly:
+1. MobileGLES 会自动：
+   - 将桌面 GLSL 转换为 GLSL ES 3.00
+   - 移除 `layout(binding)` 语法
+   - 处理版本指令
+   - 始终显式声明精度：
      ```glsl
      precision highp float;
      precision highp int;
      ```
 
-2. MobileGLES injects these macros into your shaders:
+2. MobileGLES 会向你的着色器注入以下宏：
    ```glsl
-   #define MG_MOBILEGLES                   // Indicates MobileGLES environment
-   #define MG_MOBILEGLES_VERSION 1000      // Version number (e.g. 1000 = V1.0.0)
+   #define MG_MOBILEGLES                   // 标识 MobileGLES 环境
+   #define MG_MOBILEGLES_VERSION 1000      // 版本号（例如 1000 = V1.0.0）
    ```
 
-3. If encountering issues:
-   - Enable `Ignore shader/program error`, and check the logs (located at
-     `$HOME/Documents/MG/latest.log` inside the iOS app container).
+3. 遇到问题时：
+   - 启用 `Ignore shader/program error`，并查看日志（位于 iOS 应用沙盒
+     内的 `$HOME/Documents/MG/latest.log`）。
 
-## License
+## 许可证
 
-MobileGLES is licensed under the **GNU LGPL-2.1 License**.
+MobileGLES 采用 **GNU LGPL-2.1** 许可证。
 
-Please see [LICENSE](LICENSE).
+详见 [LICENSE](LICENSE)。
 
-## Third-party components
+## 第三方组件
 
-**SPIRV-Cross** by **KhronosGroup** - [Apache License 2.0](https://github.com/KhronosGroup/SPIRV-Cross/blob/master/LICENSE): [github](https://github.com/KhronosGroup/SPIRV-Cross)
+**SPIRV-Cross** — **KhronosGroup** 出品 - [Apache License 2.0](https://github.com/KhronosGroup/SPIRV-Cross/blob/master/LICENSE)：[github](https://github.com/KhronosGroup/SPIRV-Cross)
 
-**glslang** by **KhronosGroup** - [Various Licenses](https://github.com/KhronosGroup/glslang/blob/main/LICENSE.txt): [github](https://github.com/KhronosGroup/glslang)
+**glslang** — **KhronosGroup** 出品 - [多种许可证](https://github.com/KhronosGroup/glslang/blob/main/LICENSE.txt)：[github](https://github.com/KhronosGroup/glslang)
 
-**cJSON** by **DaveGamble** - [MIT License](https://github.com/DaveGamble/cJSON/blob/master/LICENSE): [github](https://github.com/DaveGamble/cJSON)
+**cJSON** — **DaveGamble** 出品 - [MIT License](https://github.com/DaveGamble/cJSON/blob/master/LICENSE)：[github](https://github.com/DaveGamble/cJSON)
 
-**OpenGL Mathematics (*GLM*)** by **G-Truc Creation** - [The Happy Bunny License](https://github.com/g-truc/glm/blob/master/copying.txt): [github](https://github.com/g-truc/glm)
+**OpenGL Mathematics (*GLM*)** — **G-Truc Creation** 出品 - [The Happy Bunny License](https://github.com/g-truc/glm/blob/master/copying.txt)：[github](https://github.com/g-truc/glm)
 
-**FidelityFX-FSR** by **AMD** - [MIT License](https://github.com/GPUOpen-Effects/FidelityFX-FSR/blob/master/license.txt): [github](https://github.com/GPUOpen-Effects/FidelityFX-FSR)
+**FidelityFX-FSR** — **AMD** 出品 - [MIT License](https://github.com/GPUOpen-Effects/FidelityFX-FSR/blob/master/license.txt)：[github](https://github.com/GPUOpen-Effects/FidelityFX-FSR)
 
-**xxHash** by **Yann Collet** - [BSD 2-Clause License](https://github.com/Cyan4973/xxHash/blob/dev/LICENSE): [github](https://github.com/Cyan4973/xxHash)
+**xxHash** — **Yann Collet** 出品 - [BSD 2-Clause License](https://github.com/Cyan4973/xxHash/blob/dev/LICENSE)：[github](https://github.com/Cyan4973/xxHash)
 
-**ANGLE** by **Google** - [BSD 3-Clause License](https://chromium.googlesource.com/angle/angle/+/refs/heads/main/LICENSE): [chromium](https://chromium.googlesource.com/angle/angle/)
+**ANGLE** — **Google** 出品 - [BSD 3-Clause License](https://chromium.googlesource.com/angle/angle/+/refs/heads/main/LICENSE)：[chromium](https://chromium.googlesource.com/angle/angle/)
 
 ---
 
-*MobileGLES is an unofficial fork and is not affiliated with Mojang, Microsoft,
-or the upstream MobileGlues project. Minecraft: Java Edition is a trademark of
-Mojang Synergies AB.*
+*MobileGLES 是非官方分支，与 Mojang、Microsoft 及上游 MobileGlues 项目
+均无隶属关系。Minecraft: Java Edition 是 Mojang Synergies AB 的商标。*
